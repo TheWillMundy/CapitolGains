@@ -10,6 +10,8 @@ A Python package for retrieving and analyzing financial disclosure data from mem
   - [x] Individual trade reports (Periodic Transaction Reports)
   - [x] Annual financial disclosure forms
 - [x] Support for House website using Playwright
+- [x] Efficient caching of disclosure data to minimize network requests
+- [x] Direct download of disclosure PDFs using HTTP requests
 - [ ] Trade history display for current year (including previous year during grace period through February 15th)
 
 ### Upcoming Features
@@ -33,6 +35,7 @@ pip install capitolgains
 
 ```python
 from capitolgains import Congress, Representative, Senator
+from capitolgains.utils.scraper import HouseDisclosureScraper
 
 # Initialize Congress tracker
 congress = Congress()
@@ -40,21 +43,22 @@ congress = Congress()
 # Get all current members
 members = congress.get_all_members()
 
-# Get recent trades for a House member (defaults to current year)
+# Initialize scraper
+scraper = HouseDisclosureScraper()
+
+# Get disclosures for a House member (caches results)
 rep = Representative("Pelosi", state="CA", district="11")
-trades = rep.get_recent_trades()
+disclosures = rep.get_disclosures(scraper, year="2023")
 
-# Get trades for a specific year
-trades_2023 = rep.get_recent_trades(year="2023")
+# Get trades for a specific year using cached data
+trades_2023 = rep.get_recent_trades(scraper, year="2023")
 
-# Get annual financial disclosure
-disclosure = rep.get_annual_disclosure(2023)
+# Get annual financial disclosure using cached data
 # Returns dict with filing info and local PDF path
+disclosure = rep.get_annual_disclosure(scraper, 2023)
 print(f"Downloaded disclosure to: {disclosure['file_path']}")
-```
 
 ## Project Structure
-
 ```
 capitolgains/
 ├── __init__.py

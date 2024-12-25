@@ -20,6 +20,11 @@ The tests use the same `.env` file as the main application. Make sure you have a
 CONGRESS_API_KEY=your_api_key_here
 ```
 
+4. Install Playwright browsers:
+```bash
+playwright install
+```
+
 ## Running Tests
 
 Run all tests:
@@ -47,4 +52,5 @@ pytest tests/core/test_congress.py
 
 - Tests use real API calls to ensure actual functionality
 - Requires valid Congress.gov API key
-- Tests will be skipped if API key is not available 
+- Tests will be skipped if API key is not available
+- Playwright is used for browser automation in tests, ensure it is set up correctly 
