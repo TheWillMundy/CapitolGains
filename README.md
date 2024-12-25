@@ -5,23 +5,23 @@ A Python package for retrieving and analyzing financial disclosure data from mem
 ## Features
 
 ### Core Functionality
-- Comprehensive congress member database with party affiliations
-- Automated retrieval of financial disclosures:
-  - Individual trade reports (Periodic Transaction Reports)
-  - Annual financial disclosure forms
-- Support for both Senate and House websites using Playwright
-- Trade history display for current year (including previous year during grace period through February 15th)
+- [x] Comprehensive congress member database with party affiliations
+- [x] Automated retrieval of financial disclosures:
+  - [x] Individual trade reports (Periodic Transaction Reports)
+  - [x] Annual financial disclosure forms
+- [x] Support for House website using Playwright
+- [ ] Trade history display for current year (including previous year during grace period through February 15th)
 
 ### Upcoming Features
-- Historical data tracking (years in office)
-- Net worth dashboard integrating annual disclosures and recent trades
-- Database integration for persistent storage
-- Advanced trade history visualization
-- Configurable automated data collection:
-  - Filtering by individual names
-  - Party-based selection
-  - Chamber-specific queries (Senate/House)
-  - Custom group definitions
+- [ ] Historical data tracking (years in office)
+- [ ] Net worth dashboard integrating annual disclosures and recent trades
+- [ ] Database integration for persistent storage
+- [ ] Advanced trade history visualization
+- [ ] Configurable automated data collection:
+  - [ ] Filtering by individual names
+  - [ ] Party-based selection
+  - [ ] Chamber-specific queries (Senate/House)
+  - [ ] Custom group definitions
 
 ## Installation
 
@@ -40,13 +40,17 @@ congress = Congress()
 # Get all current members
 members = congress.get_all_members()
 
-# Get trades for a specific senator
-senator = Senator("Warren")
-trades = senator.get_recent_trades()
+# Get recent trades for a House member (defaults to current year)
+rep = Representative("Pelosi", state="CA", district="11")
+trades = rep.get_recent_trades()
 
-# Get annual disclosure for house member
-rep = Representative("Pelosi")
+# Get trades for a specific year
+trades_2023 = rep.get_recent_trades(year="2023")
+
+# Get annual financial disclosure
 disclosure = rep.get_annual_disclosure(2023)
+# Returns dict with filing info and local PDF path
+print(f"Downloaded disclosure to: {disclosure['file_path']}")
 ```
 
 ## Project Structure
@@ -108,4 +112,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Disclaimer
 
-This package is for educational and research purposes only. Users are responsible for ensuring compliance with all applicable laws and regulations regarding the collection and use of congressional financial data.
+This package is for educational and research purposes only. Users are responsible for ensuring compliance with all applicable laws and regulations regarding the collection and use of congressional financial data. This project utilizes data from various sources, including the [Congress.gov API](https://github.com/LibraryOfCongress/api.congress.gov/) and other publicly available resources.
