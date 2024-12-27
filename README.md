@@ -9,9 +9,16 @@ A Python package for retrieving and analyzing financial disclosure data from mem
 - [x] Automated retrieval of financial disclosures:
   - [x] Individual trade reports (Periodic Transaction Reports)
   - [x] Annual financial disclosure forms
+  - [x] Blind trust reports (Senate only)
+  - [x] Filing extensions
 - [x] Support for House website using Playwright
+- [x] Support for Senate website with robust error handling:
+  - [x] Automated agreement acceptance
+  - [x] Smart pagination handling
+  - [x] Resilient to network issues with retry logic
 - [x] Efficient caching of disclosure data to minimize network requests
 - [x] Direct download of disclosure PDFs using HTTP requests
+- [x] Case-insensitive member matching
 - [ ] Trade history display for current year (including previous year during grace period through February 15th)
 
 ### Upcoming Features
@@ -36,6 +43,7 @@ pip install capitolgains
 ```python
 from capitolgains import Congress, Representative, Senator
 from capitolgains.utils.scraper import HouseDisclosureScraper
+from capitolgains.utils.senate_scraper import SenateDisclosureScraper
 
 # Initialize Congress tracker
 congress = Congress()
@@ -43,20 +51,26 @@ congress = Congress()
 # Get all current members
 members = congress.get_all_members()
 
-# Initialize scraper
-scraper = HouseDisclosureScraper()
-
-# Get disclosures for a House member (caches results)
+# House member example
+house_scraper = HouseDisclosureScraper()
 rep = Representative("Pelosi", state="CA", district="11")
-disclosures = rep.get_disclosures(scraper, year="2023")
+house_disclosures = rep.get_disclosures(house_scraper, year="2023")
 
 # Get trades for a specific year using cached data
-trades_2023 = rep.get_recent_trades(scraper, year="2023")
+trades_2023 = rep.get_recent_trades(house_scraper, year="2023")
 
-# Get annual financial disclosure using cached data
-# Returns dict with filing info and local PDF path
-disclosure = rep.get_annual_disclosure(scraper, 2023)
-print(f"Downloaded disclosure to: {disclosure['file_path']}")
+# Senate member example
+with SenateDisclosureScraper() as senate_scraper:
+    sen = Senator("Warren", first_name="Elizabeth", state="MA")
+    senate_disclosures = sen.get_disclosures(senate_scraper, year="2023")
+    
+    # Get recent trades for a senator known for frequent trading
+    tuberville = Senator("Tuberville", first_name="Tommy", state="AL")
+    trades = tuberville.get_recent_trades(senate_scraper, year="2023")
+
+    # Get annual financial disclosure
+    disclosure = sen.get_annual_disclosure(senate_scraper, 2023)
+    print(f"Downloaded disclosure to: {disclosure['file_path']}")
 
 ## Project Structure
 ```
@@ -69,7 +83,8 @@ capitolgains/
 │   └── senator.py       # Senator functionality
 ├── utils/
 │   ├── __init__.py
-│   ├── scraper.py      # Playwright automation
+│   ├── scraper.py      # House website automation
+│   ├── senate_scraper.py # Senate website automation
 │   └── parser.py       # Document parsing utilities
 ├── database/
 │   ├── __init__.py
@@ -99,12 +114,32 @@ source venv/bin/activate  # Linux/Mac
 3. Install dependencies
 ```bash
 pip install -r requirements.txt
+pip install -r tests/requirements-test.txt  # For running tests
 ```
 
 4. Install Playwright browsers
 ```bash
 playwright install
 ```
+
+## Testing
+
+The project includes comprehensive test suites for both House and Senate functionality:
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test modules
+pytest tests/core/test_senator.py
+pytest tests/utils/test_senate_scraper.py
+```
+
+Test features include:
+- Extensive integration tests with live websites
+- Edge case handling and error scenarios
+- Proper resource cleanup
+- Debug logging for troubleshooting
 
 ## Contributing
 
