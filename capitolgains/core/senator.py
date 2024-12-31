@@ -13,6 +13,9 @@ The Senate disclosure system has some key differences from the House system:
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from capitolgains.utils.senate_scraper import SenateDisclosureScraper
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Senator:
     """Class representing a Senator and their financial disclosures.
@@ -52,7 +55,13 @@ class Senator:
         self.state = state
         self._cached_disclosures: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         
-    def get_disclosures(self, scraper: SenateDisclosureScraper, year: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+    def get_disclosures(
+        self, 
+        scraper: SenateDisclosureScraper, 
+        year: Optional[str] = None,
+        include_candidate_reports: bool = False,
+        test_mode: bool = False
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """Get all disclosures for the senator for a given year.
         
         This method fetches all types of financial disclosures for the specified year:
@@ -67,12 +76,15 @@ class Senator:
         Args:
             scraper: Instance of SenateDisclosureScraper to use for fetching data
             year: Year to search for (defaults to current year)
+            include_candidate_reports: Whether to include candidate reports (defaults to False)
+            test_mode: If True, only return one match per category (for testing)
             
         Returns:
             Dictionary with categorized disclosures:
             {
                 'trades': List of PTR disclosures,
                 'annual': List of annual disclosures (FD),
+                'amendments': List of amendments,
                 'blind_trust': List of blind trust disclosures,
                 'extension': List of extension requests,
                 'other': List of other disclosures
@@ -81,9 +93,10 @@ class Senator:
         if not year:
             year = str(datetime.now().year)
             
-        # Return cached results if available
-        if year in self._cached_disclosures:
-            return self._cached_disclosures[year]
+        # Create a cache key that includes the candidate reports setting
+        cache_key = f"{year}_{include_candidate_reports}_{test_mode}"
+        if cache_key in self._cached_disclosures:
+            return self._cached_disclosures[cache_key]
             
         # Fetch all disclosure types in one request
         all_disclosures = scraper.search_member_disclosures(
@@ -91,7 +104,8 @@ class Senator:
             filing_year=year,
             first_name=self.first_name,
             state=self.state,
-            report_types=['annual', 'ptr', 'extension', 'blind_trust', 'other']
+            report_types=['annual', 'ptr', 'extension', 'blind_trust', 'other'],
+            include_candidate_reports=include_candidate_reports
         )
         
         # Filter results to ensure they match our senator
@@ -100,10 +114,13 @@ class Senator:
             if self._matches_senator(d)
         ]
         
+        logger.info(f"Found {len(filtered_disclosures)} total disclosures for {self.name}")
+        
         # Initialize categories
         categorized = {
             'trades': [],
             'annual': [],
+            'amendments': [],
             'blind_trust': [],
             'extension': [],
             'other': []
@@ -113,28 +130,50 @@ class Senator:
         for disclosure in filtered_disclosures:
             report_type = disclosure['report_type'].lower()
             
-            # Map report types to categories
+            # First check for extensions and amendments as they may contain other keywords
+            if 'extension' in report_type or 'due date' in report_type:
+                logger.info(f"Found extension: {disclosure['report_type']}")
+                if not test_mode or len(categorized['extension']) == 0:
+                    categorized['extension'].append(disclosure)
+                continue
+                
+            if 'amendment' in report_type:
+                logger.info(f"Found amendment: {disclosure['report_type']}")
+                if not test_mode or len(categorized['amendments']) == 0:
+                    categorized['amendments'].append(disclosure)
+                continue
+                
+            # Then check other categories
             if 'periodic transaction' in report_type:
-                categorized['trades'].append(disclosure)
-            elif 'annual' in report_type:
-                categorized['annual'].append(disclosure)
+                if not test_mode or len(categorized['trades']) == 0:
+                    logger.info(f"Found PTR: {disclosure['report_type']}")
+                    categorized['trades'].append(disclosure)
+            elif ('annual report for cy' in report_type or
+                  'financial disclosure report' in report_type or 
+                  'public financial disclosure' in report_type or
+                  report_type == 'annual report'):
+                logger.info(f"Found annual report: {disclosure['report_type']}")
+                if not test_mode or len(categorized['annual']) == 0:
+                    categorized['annual'].append(disclosure)
             elif 'blind trust' in report_type:
-                categorized['blind_trust'].append(disclosure)
-            elif 'extension' in report_type:
-                categorized['extension'].append(disclosure)
+                if not test_mode or len(categorized['blind_trust']) == 0:
+                    categorized['blind_trust'].append(disclosure)
             else:
-                categorized['other'].append(disclosure)
+                logger.info(f"Uncategorized report type: {disclosure['report_type']}")
+                if not test_mode or len(categorized['other']) == 0:
+                    categorized['other'].append(disclosure)
         
-        # Cache results
-        self._cached_disclosures[year] = categorized
+        # Cache results with the combined key
+        self._cached_disclosures[cache_key] = categorized
         return categorized
         
     def _matches_senator(self, disclosure: Dict[str, Any]) -> bool:
         """Check if a disclosure matches this senator's details.
         
-        Performs case-insensitive matching on name and state (if provided).
-        This is important because the Senate system sometimes returns results
-        in different cases (e.g., "WARREN" vs "Warren").
+        The Senate system returns names in various formats:
+        - First name might include middle initial/name
+        - Office field might not include state
+        - Last name might be repeated in office field
         
         Args:
             disclosure: Disclosure dictionary from search results
@@ -142,33 +181,52 @@ class Senator:
         Returns:
             True if the disclosure matches this senator's details, False otherwise
         """
-        # Check first name if provided
-        if self.first_name and disclosure['first_name'].lower() != self.first_name.lower():
-            return False
-            
-        # Check last name
+        logger.info(f"Checking match for disclosure: {disclosure['first_name']} {disclosure['last_name']}, {disclosure['office']}")
+        
+        # Check last name first (most reliable)
         if disclosure['last_name'].lower() != self.name.lower():
+            logger.info(f"Last name mismatch: {disclosure['last_name'].lower()} vs {self.name.lower()}")
             return False
             
-        # Check state if provided
-        if self.state:
-            office = disclosure['office']
-            if not any(part.strip() == self.state for part in office.split(',')):
+        # Check first name if provided - more lenient matching
+        if self.first_name:
+            disclosure_first = disclosure['first_name'].lower()
+            our_first = self.first_name.lower()
+            # Accept if either name starts with the other
+            if not (disclosure_first.startswith(our_first) or our_first.startswith(disclosure_first)):
+                logger.info(f"First name mismatch: {disclosure_first} vs {our_first}")
                 return False
-                
+        
+        # For state matching, we'll be more lenient since the office field is inconsistent
+        # If we have a state requirement but can't verify it, we'll trust the other matches
+        # This works because we're already filtering by name in the search
+        if self.state:
+            office = disclosure['office'].lower()
+            state_patterns = [
+                f", {self.state.lower()}",  # "Tuberville, Tommy (Senator), AL"
+                f"({self.state.lower()})",  # "Tuberville (AL)"
+                f" {self.state.lower()} ",  # "AL Senator"
+                self.state.lower()          # Just the state somewhere
+            ]
+            state_found = any(pattern in office for pattern in state_patterns)
+            if not state_found:
+                logger.info(f"Note: State {self.state} not found in office field: {office} - trusting name match")
+        
+        logger.info("Disclosure matches senator")
         return True
         
-    def get_recent_trades(self, scraper: SenateDisclosureScraper, year: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_recent_trades(self, scraper: SenateDisclosureScraper, year: Optional[str] = None, test_mode: bool = False) -> List[Dict[str, Any]]:
         """Get recent trades (PTRs) for the senator.
         
         Args:
             scraper: Instance of SenateDisclosureScraper to use
             year: Year to search for trades (defaults to current year)
+            test_mode: If True, only return one trade (for testing)
             
         Returns:
             List of trade dictionaries, each containing filing details and PDF URL
         """
-        disclosures = self.get_disclosures(scraper, year)
+        disclosures = self.get_disclosures(scraper, year, test_mode=test_mode)
         return disclosures['trades']
         
     def get_annual_disclosure(self, scraper: SenateDisclosureScraper, year: int) -> Dict[str, Any]:

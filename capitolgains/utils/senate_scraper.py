@@ -14,7 +14,7 @@ import time
 import logging
 from pathlib import Path
 import tempfile
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple, Union
 from playwright.sync_api import sync_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 
 # Configure logging
@@ -28,6 +28,7 @@ class SenateDisclosureScraper:
     - Download individual disclosure PDFs
     - Handle pagination through search results
     - Manage browser automation with proper error handling
+    - Process both web table and PDF filings
     
     The scraper handles the Senate's specific requirements, such as accepting
     the initial agreement and managing the DataTables-based results interface.
@@ -168,15 +169,7 @@ class SenateDisclosureScraper:
             raise ValueError(f"Search form not ready: {str(e)}") from e
             
     def _wait_for_results_loading(self):
-        """Wait for DataTable results to load completely.
-        
-        The Senate site uses DataTables which shows a processing indicator
-        while loading. This method ensures we properly wait for the complete
-        loading cycle.
-        
-        Returns:
-            bool: True if results were found, False if no results
-        """
+        """Wait for DataTable results to load completely."""
         try:
             # Wait for processing to start
             self._page.wait_for_selector(
@@ -199,6 +192,30 @@ class SenateDisclosureScraper:
                 timeout=5000
             )
             
+            # Detailed table inspection
+            table_info = self._page.evaluate('''() => {
+                const table = document.querySelector('#filedReports');
+                if (!table) return { exists: false };
+                
+                const headers = Array.from(table.querySelectorAll('thead th'))
+                    .map(th => th.innerText.trim());
+                    
+                const tbody = table.querySelector('tbody');
+                const rows = tbody ? Array.from(tbody.querySelectorAll('tr')) : [];
+                
+                return {
+                    exists: true,
+                    headers: headers,
+                    rowCount: rows.length,
+                    firstRowCells: rows.length > 0 ? 
+                        Array.from(rows[0].querySelectorAll('td'))
+                            .map(td => td.innerText.trim()) : [],
+                    html: table.outerHTML.substring(0, 500) // First 500 chars for debugging
+                };
+            }''')
+            
+            logger.debug(f"Table inspection results: {table_info}")
+            
             # Check for no results message
             no_results = self._page.query_selector('.alert-info')
             if no_results and "No results found" in no_results.inner_text():
@@ -216,7 +233,8 @@ class SenateDisclosureScraper:
         filing_year: str,
         first_name: Optional[str] = None,
         state: Optional[str] = None,
-        report_types: Optional[List[str]] = None
+        report_types: Optional[List[str]] = None,
+        include_candidate_reports: bool = False
     ) -> List[Dict[str, Any]]:
         """Search for a specific senator's financial disclosures.
         
@@ -233,27 +251,14 @@ class SenateDisclosureScraper:
             state: Optional two-letter state code
             report_types: Optional list of report types to search for
                         ('annual', 'ptr', 'extension', 'blind_trust', 'other')
+            include_candidate_reports: Whether to include candidate reports in results
             
         Returns:
-            List of dictionaries containing disclosure information:
-            [
-                {
-                    'first_name': str,
-                    'last_name': str,
-                    'office': str,
-                    'report_type': str,
-                    'date': str,
-                    'pdf_url': str
-                },
-                ...
-            ]
-            
-        Raises:
-            TimeoutError: If the search results don't load within timeout period
-            ValueError: If the search form cannot be submitted
+            List of dictionaries containing disclosure information
         """
         for attempt in range(self.MAX_RETRIES):
             try:
+                logger.debug(f"Starting search for {first_name} {last_name}, {state}, year {filing_year}")
                 # Ensure we're on search page with agreement accepted
                 self._accept_agreement()
                 self._wait_for_search_form()
@@ -270,10 +275,13 @@ class SenateDisclosureScraper:
                         .forEach(el => el.checked = false);
                 }''', [last_name, first_name])
                 
+                logger.debug("Form filled with basic info")
+                
                 # Select senator type and state if provided
                 self._page.check('.senator_filer')
                 if state:
                     self._page.select_option('#senatorFilerState', state)
+                    logger.debug(f"Selected state: {state}")
                 
                 # Select report types if specified
                 if report_types:
@@ -286,10 +294,17 @@ class SenateDisclosureScraper:
                             'selectors => selectors.forEach(s => document.querySelector(s).checked = true)',
                             selectors
                         )
+                    logger.debug(f"Selected report types: {report_types}")
                 
                 # Submit search and wait for results
+                logger.debug("Submitting search form")
                 self._page.click('button[type="submit"]')
-                if not self._wait_for_results_loading():
+                
+                has_results = self._wait_for_results_loading()
+                logger.debug(f"Search results loaded, has_results: {has_results}")
+                
+                if not has_results:
+                    logger.debug("No results found")
                     return []
                 
                 # Extract results from all pages
@@ -297,12 +312,15 @@ class SenateDisclosureScraper:
                 page_num = 1
                 
                 while True:
+                    logger.debug(f"Processing page {page_num}")
                     results = self._extract_page_results()
+                    logger.debug(f"Found {len(results)} results on page {page_num}")
                     all_results.extend(results)
                     
                     # Check for next page
                     next_button = self._page.query_selector('.paginate_button.next:not(.disabled)')
                     if not next_button:
+                        logger.debug("No more pages")
                         break
                         
                     # Load next page
@@ -310,9 +328,18 @@ class SenateDisclosureScraper:
                     self._wait_for_results_loading()
                     page_num += 1
                 
+                # Filter out candidate reports if not wanted
+                if not include_candidate_reports:
+                    all_results = [
+                        r for r in all_results 
+                        if 'candidate' not in r['report_type'].lower()
+                    ]
+                    
+                logger.debug(f"Total results found: {len(all_results)}")
                 return all_results
                 
             except Exception as e:
+                logger.error(f"Search attempt {attempt + 1} failed: {str(e)}")
                 if attempt == self.MAX_RETRIES - 1:
                     raise
                 time.sleep(self.RETRY_DELAY)
@@ -328,16 +355,21 @@ class SenateDisclosureScraper:
         """
         results = []
         rows = self._page.query_selector_all('#filedReports tbody tr')
+        logger.debug(f"Found {len(rows)} rows in table")
         
-        for row in rows:
+        for i, row in enumerate(rows):
             try:
                 cells = row.query_selector_all('td')
+                logger.debug(f"Row {i + 1} has {len(cells)} cells")
+                
                 if len(cells) < 5:  # Skip malformed rows
+                    logger.warning(f"Row {i + 1} has insufficient cells: {len(cells)}")
                     continue
                     
                 report_cell = cells[3]
                 report_link = report_cell.query_selector('a')
                 if not report_link:  # Skip rows without report links
+                    logger.warning(f"Row {i + 1} has no report link")
                     continue
                     
                 # Extract disclosure information
@@ -347,17 +379,19 @@ class SenateDisclosureScraper:
                     'office': cells[2].inner_text().strip(),
                     'report_type': report_cell.inner_text().strip(),
                     'date': cells[4].inner_text().strip(),
-                    'pdf_url': report_link.get_attribute('href')
+                    'report_url': report_link.get_attribute('href')  # Renamed from pdf_url
                 }
                 
+                logger.debug(f"Extracted result from row {i + 1}: {result}")
+                
                 # Ensure proper URL formatting
-                if result['pdf_url'] and result['pdf_url'].startswith('/'):
-                    result['pdf_url'] = f"{self.BASE_URL}{result['pdf_url']}"
+                if result['report_url'] and result['report_url'].startswith('/'):
+                    result['report_url'] = f"{self.BASE_URL}{result['report_url']}"
                     
                 results.append(result)
                 
             except Exception as e:
-                logger.warning(f"Error processing row: {str(e)}")
+                logger.warning(f"Error processing row {i + 1}: {str(e)}")
                 continue
                 
         return results
@@ -365,47 +399,227 @@ class SenateDisclosureScraper:
     def download_disclosure_pdf(self, pdf_url: str, download_dir: Optional[str] = None) -> str:
         """Download a specific disclosure PDF.
         
+        This method handles both direct PDF downloads and web table conversions.
+        For web tables, it will generate a PDF from the printer-friendly version.
+        
         Args:
-            pdf_url: URL of the PDF to download
+            pdf_url: URL of the filing to download
             download_dir: Optional directory to save the file. If None, uses a temp directory.
             
         Returns:
-            Path to the downloaded file
+            Path to the downloaded/generated PDF file
             
         Raises:
-            ValueError: If the download fails or the PDF is invalid
+            ValueError: If the download/generation fails or the PDF is invalid
         """
         if not download_dir:
             download_dir = tempfile.mkdtemp()
             
         for attempt in range(self.MAX_RETRIES):
             try:
-                # Set headers for PDF download
-                self._page.set_extra_http_headers({
-                    "Accept": "application/pdf",
-                    "Content-Type": "application/pdf"
-                })
-                
-                # Get filename from URL and ensure .pdf extension
-                filename = os.path.basename(pdf_url)
-                if not filename.endswith('.pdf'):
-                    filename = f"{filename}.pdf"
-                download_path = os.path.join(download_dir, filename)
-                
-                # Download and verify file
-                response = self._page.request.get(pdf_url)
-                if response.status != 200:
-                    raise ValueError(f"Failed to download PDF: HTTP {response.status}")
-                    
-                with open(download_path, 'wb') as f:
-                    f.write(response.body())
-                    
-                if not os.path.exists(download_path) or os.path.getsize(download_path) == 0:
-                    raise ValueError("Downloaded PDF is empty or does not exist")
-                    
-                return download_path
+                # Process the filing and get the PDF path
+                result = self.process_filing(pdf_url, download_dir)
+                if not result['file_path']:
+                    raise ValueError("Failed to get PDF file path")
+                return result['file_path']
                 
             except Exception as e:
                 if attempt == self.MAX_RETRIES - 1:
-                    raise ValueError(f"Failed to download PDF: {str(e)}") from e
-                time.sleep(self.RETRY_DELAY) 
+                    raise ValueError(f"Failed to download/generate PDF: {str(e)}") from e
+                time.sleep(self.RETRY_DELAY)
+            
+    def _determine_filing_type(self, report_url: str) -> str:
+        """Determine whether a filing is a web table or PDF.
+        
+        This method navigates to the report URL and checks the page structure
+        to determine if it's a web table or PDF filing.
+        
+        Args:
+            report_url: URL of the report to check
+            
+        Returns:
+            'web_table' or 'pdf' indicating the filing type
+        """
+        try:
+            self._page.goto(report_url)
+            self._page.wait_for_load_state('networkidle')
+            
+            # Check for web table
+            web_table = self._page.query_selector('#reportDataTable')
+            if web_table:
+                return 'web_table'
+                
+            # If no web table, assume it's a PDF filing
+            return 'pdf'
+            
+        except Exception as e:
+            logger.warning(f"Error determining filing type: {str(e)}")
+            return 'pdf'  # Default to PDF on error
+            
+    def _generate_pdf(self, download_dir: str) -> str:
+        """Generate a PDF from the current page.
+        
+        Args:
+            download_dir: Directory to save the PDF
+            
+        Returns:
+            Path to the generated PDF file
+        """
+        # Generate unique filename
+        timestamp = int(time.time())
+        pdf_path = os.path.join(download_dir, f"report_{timestamp}.pdf")
+        
+        # Generate PDF using Playwright's PDF function
+        self._page.pdf(path=pdf_path, format='Letter')
+        
+        if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+            raise ValueError("Generated PDF is empty or does not exist")
+            
+        return pdf_path
+            
+    def _scrape_web_table(self, report_url: str) -> Dict[str, Any]:
+        """Scrape data from a web table filing.
+        
+        Args:
+            report_url: URL of the web table report
+            
+        Returns:
+            Dictionary containing the parsed web table data
+        """
+        try:
+            self._page.goto(report_url)
+            self._page.wait_for_selector('#reportDataTable', state='visible', timeout=10000)
+            
+            # Extract table data using JavaScript for better performance
+            table_data = self._page.evaluate('''() => {
+                const tables = Array.from(document.querySelectorAll('#reportDataTable'));
+                return tables.map(table => {
+                    const headers = Array.from(table.querySelectorAll('thead th'))
+                        .map(th => th.innerText.trim().toLowerCase());
+                        
+                    const rows = Array.from(table.querySelectorAll('tbody tr'))
+                        .map(row => {
+                            const cells = Array.from(row.querySelectorAll('td'));
+                            return Object.fromEntries(
+                                headers.map((header, i) => [header, cells[i]?.innerText?.trim() || ''])
+                            );
+                        });
+                        
+                    return {
+                        headers: headers,
+                        rows: rows
+                    };
+                });
+            }''')
+            
+            if not table_data:
+                raise ValueError("Failed to extract web table data")
+                
+            return {
+                'type': 'web_table',
+                'tables': table_data
+            }
+            
+        except Exception as e:
+            raise ValueError(f"Failed to scrape web table: {str(e)}") from e
+            
+    def process_filing(self, report_url: str, download_dir: Optional[str] = None) -> Dict[str, Any]:
+        """Process a filing, handling both web tables and PDFs.
+        
+        This method:
+        1. Determines if the filing is a web table or PDF
+        2. Routes to appropriate handler
+        3. Returns structured data and/or file paths
+        
+        Args:
+            report_url: URL of the report to process
+            download_dir: Optional directory for saving files
+            
+        Returns:
+            Dictionary containing:
+            - 'type': 'web_table' or 'pdf'
+            - 'data': Parsed data for web tables
+            - 'file_path': Path to PDF file
+        """
+        if not download_dir:
+            download_dir = tempfile.mkdtemp()
+            
+        filing_type = self._determine_filing_type(report_url)
+        logger.debug(f"Processing {filing_type} filing from {report_url}")
+        
+        if filing_type == 'web_table':
+            # First get the full report PDF
+            pdf_path = None
+            try:
+                # Look for printer-friendly version
+                printer_link = self._page.query_selector('a[href*="print"]:has-text("Printer-Friendly")')
+                if printer_link:
+                    # Store current URL to return to later
+                    current_url = self._page.url
+                    
+                    # Get printer-friendly URL and navigate to it
+                    printer_url = printer_link.get_attribute('href')
+                    if printer_url.startswith('/'):
+                        printer_url = f"{self.BASE_URL}{printer_url}"
+                    
+                    logger.debug(f"Navigating to printer-friendly version: {printer_url}")    
+                    # Navigate to printer-friendly version
+                    self._page.goto(printer_url)
+                    self._page.wait_for_load_state('networkidle')
+                    
+                    # Generate PDF from the printer-friendly page
+                    pdf_path = self._generate_pdf(download_dir)
+                    logger.debug(f"Generated PDF at: {pdf_path}")
+                    
+                    # Return to original page
+                    self._page.goto(current_url)
+                    self._page.wait_for_load_state('networkidle')
+                    
+            except Exception as e:
+                logger.warning(f"Failed to generate PDF from web table: {str(e)}")
+                
+            # Then scrape the web tables
+            data = self._scrape_web_table(report_url)
+            
+            return {
+                'type': 'web_table',
+                'data': data,
+                'file_path': pdf_path
+            }
+            
+        else:  # PDF filing
+            try:
+                # Look for printer-friendly version with more flexible selector
+                printer_link = self._page.query_selector('a[href*="/print/"]:has-text("Printer-Friendly"), a.btn-primary:has-text("Printer-Friendly")')
+                if not printer_link:
+                    raise ValueError("No printer-friendly version found for PDF filing")
+                
+                # Store current URL to return to later
+                current_url = self._page.url
+                
+                # Get printer-friendly URL and navigate to it
+                printer_url = printer_link.get_attribute('href')
+                if printer_url.startswith('/'):
+                    printer_url = f"{self.BASE_URL}{printer_url}"
+                
+                logger.debug(f"Navigating to printer-friendly version: {printer_url}")    
+                # Navigate to printer-friendly version
+                self._page.goto(printer_url)
+                self._page.wait_for_load_state('networkidle')
+                
+                # Generate PDF from the printer-friendly page
+                pdf_path = self._generate_pdf(download_dir)
+                logger.debug(f"Generated PDF at: {pdf_path}")
+                
+                # Return to original page
+                self._page.goto(current_url)
+                self._page.wait_for_load_state('networkidle')
+                
+                return {
+                    'type': 'pdf',
+                    'data': None,
+                    'file_path': pdf_path
+                }
+                    
+            except Exception as e:
+                raise ValueError(f"Failed to generate PDF: {str(e)}") from e 
