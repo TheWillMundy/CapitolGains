@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 import pytest
 from capitolgains.core.senator import Senator
-from capitolgains.utils.senate_scraper import SenateDisclosureScraper
+from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 
 # Test Data
 CURRENT_YEAR = str(datetime.now().year)

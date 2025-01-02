@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 import pytest
 from capitolgains.core.representative import Representative
-from capitolgains.utils.scraper import HouseDisclosureScraper
+from capitolgains.utils.representative_scraper import HouseDisclosureScraper
 
 # Test Data
 CURRENT_YEAR = str(datetime.now().year)

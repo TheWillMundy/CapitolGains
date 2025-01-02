@@ -1,10 +1,10 @@
-"""Tests for senate_scraper.py module."""
+"""Tests for senator_scraper.py module."""
 
 import logging
 import os
 import pytest
 from pathlib import Path
-from capitolgains.utils.senate_scraper import SenateDisclosureScraper
+from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 
 # Add logging configuration
 logging.basicConfig(

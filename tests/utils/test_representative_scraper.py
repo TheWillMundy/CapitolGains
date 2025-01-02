@@ -1,9 +1,9 @@
-"""Tests for scraper.py module."""
+"""Tests for representative_scraper.py module."""
 
 import os
 import pytest
 from pathlib import Path
-from capitolgains.utils.scraper import HouseDisclosureScraper
+from capitolgains.utils.representative_scraper import HouseDisclosureScraper
 
 @pytest.fixture(scope="function")
 def scraper():

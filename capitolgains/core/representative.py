@@ -7,7 +7,7 @@ methods to fetch both periodic transaction reports (PTRs) and annual financial d
 
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from capitolgains.utils.scraper import HouseDisclosureScraper
+from capitolgains.utils.representative_scraper import HouseDisclosureScraper
 
 class Representative:
     """Class representing a House Representative and their financial disclosures.

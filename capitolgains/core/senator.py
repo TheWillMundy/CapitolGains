@@ -12,7 +12,7 @@ The Senate disclosure system has some key differences from the House system:
 
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from capitolgains.utils.senate_scraper import SenateDisclosureScraper
+from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 import logging
 
 logger = logging.getLogger(__name__)
