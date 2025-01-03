@@ -5,8 +5,7 @@ website. It handles searching for disclosures, downloading PDFs, and retrieving
 annual reports.
 
 The scraper uses Playwright for browser automation, with proper resource management
-through context managers. It includes retry logic and proper error handling for
-network operations.
+through context managers. It includes proper error handling for network operations.
 """
 
 import os
@@ -35,13 +34,11 @@ class SenateDisclosureScraper:
     
     Attributes:
         BASE_URL: Base URL for the Senate Financial Disclosure portal
-        MAX_RETRIES: Maximum number of retry attempts for network operations
-        RETRY_DELAY: Delay between retry attempts in seconds
+        SEARCH_PATH: Path to the search page
     """
     
     BASE_URL = "https://efdsearch.senate.gov"
-    MAX_RETRIES = 3
-    RETRY_DELAY = 1
+    SEARCH_PATH = "/search/"
     
     # Map of report types to their form values
     REPORT_TYPE_MAP = {
@@ -65,6 +62,7 @@ class SenateDisclosureScraper:
         self._context = None
         self._page = None
         self._agreement_accepted = False
+        self._session_start_time = None
         
     def __enter__(self):
         """Start Playwright when entering context.
@@ -95,20 +93,61 @@ class SenateDisclosureScraper:
         if self._playwright:
             self._playwright.stop()
             
-    def _accept_agreement(self):
+    def with_session(self, target_url: Optional[str] = None, force_new: bool = False) -> 'SenateDisclosureScraper':
+        """Ensure a valid Senate session exists.
+        
+        This method ensures we have an active session with the Senate disclosure site,
+        handling the agreement acceptance if needed. It can either reuse an existing
+        session or create a new one.
+        
+        Args:
+            target_url: Optional URL to navigate to (defaults to search page)
+            force_new: Whether to force a new session even if one exists
+            
+        Returns:
+            Self for method chaining
+            
+        Raises:
+            TimeoutError: If unable to establish session
+        """
+        session_age = time.time() - (self._session_start_time or 0) if self._session_start_time else None
+        
+        if force_new:
+            logger.info("Forcing new session")
+        elif not self._agreement_accepted:
+            logger.info("Starting new session (agreement not accepted)")
+        elif target_url:
+            logger.info(f"Navigating to new page within session (age: {session_age:.1f}s)")
+        else:
+            logger.info(f"Reusing existing session (age: {session_age:.1f}s)")
+            
+        if force_new or not self._agreement_accepted:
+            self._accept_agreement(target_url)
+            self._session_start_time = time.time()
+        elif target_url:  # Have session but want different page
+            self._page.goto(target_url)
+            self._page.wait_for_load_state('networkidle')
+        return self
+
+    def _accept_agreement(self, target_url: Optional[str] = None):
         """Accept the initial agreement on the Senate disclosure site.
         
-        This is required before any search operations can be performed.
+        This is required before any operations can be performed.
         The Senate site requires explicit acceptance of terms via a checkbox.
-        If the agreement has already been accepted in this session, this
-        method will skip the acceptance process.
+        
+        Args:
+            target_url: Optional URL to navigate to after accepting agreement.
+                       If None, defaults to the search page.
         
         Raises:
             TimeoutError: If the agreement page doesn't load or accept within timeout
         """
         try:
-            # Always navigate to search page first
-            self._page.goto(f"{self.BASE_URL}/search/")
+            # Default to search page if no target URL provided
+            target_url = target_url or f"{self.BASE_URL}{self.SEARCH_PATH}"
+            
+            # Always navigate to target URL first
+            self._page.goto(target_url)
             self._page.wait_for_load_state('networkidle')
             
             # Check if we need to accept agreement by looking for the form
@@ -117,16 +156,16 @@ class SenateDisclosureScraper:
                 logger.debug("Found agreement form, accepting")
                 # We're on the agreement page, need to accept
                 self._page.click('#agree_statement')
-                self._page.wait_for_url(f"{self.BASE_URL}/search/", timeout=5000)
+                self._page.wait_for_url(target_url, timeout=5000)
                 self._agreement_accepted = True
             else:
-                # We're already on the search page
-                logger.debug("No agreement form found, already on search page")
+                # We're already on the target page
+                logger.debug("No agreement form found, already on target page")
                 self._agreement_accepted = True
             
         except PlaywrightTimeout as e:
             raise TimeoutError("Failed to accept agreement") from e
-            
+
     def _wait_for_search_form(self):
         """Wait for the search form to be loaded and ready.
         
@@ -169,7 +208,7 @@ class SenateDisclosureScraper:
             raise ValueError(f"Search form not ready: {str(e)}") from e
             
     def _wait_for_results_loading(self):
-        """Wait for DataTable results to load completely."""
+        """Wait forDataTable results to load completely."""
         try:
             # Wait for processing to start
             self._page.wait_for_selector(
@@ -239,7 +278,7 @@ class SenateDisclosureScraper:
         """Search for a specific senator's financial disclosures.
         
         This method handles the complete search process:
-        1. Accepts the initial agreement if needed
+        1. Ensures we have a valid session
         2. Fills out the search form with provided criteria
         3. Handles the DataTables loading states
         4. Extracts results across all pagination pages
@@ -255,95 +294,97 @@ class SenateDisclosureScraper:
             
         Returns:
             List of dictionaries containing disclosure information
+            
+        Raises:
+            TimeoutError: If the search results don't load within timeout period
+            ValueError: If the search form cannot be submitted or results cannot be processed
         """
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                logger.debug(f"Starting search for {first_name} {last_name}, {state}, year {filing_year}")
-                # Ensure we're on search page with agreement accepted
-                self._accept_agreement()
-                self._wait_for_search_form()
+        try:
+            logger.debug(f"Starting search for {first_name} {last_name}, {state}, year {filing_year}")
+            # Ensure we have a valid session on the search page
+            self.with_session(f"{self.BASE_URL}{self.SEARCH_PATH}")
+            self._wait_for_search_form()
+            
+            # Fill form using efficient JavaScript evaluation
+            self._page.evaluate('''([lastName, firstName]) => {
+                const ln = document.getElementById('lastName');
+                const fn = document.getElementById('firstName');
+                ln.value = lastName;
+                if (firstName) fn.value = firstName;
                 
-                # Fill form using efficient JavaScript evaluation
-                self._page.evaluate('''([lastName, firstName]) => {
-                    const ln = document.getElementById('lastName');
-                    const fn = document.getElementById('firstName');
-                    ln.value = lastName;
-                    if (firstName) fn.value = firstName;
+                // Clear any existing report type selections
+                document.querySelectorAll('input[name="report_type"]')
+                    .forEach(el => el.checked = false);
+            }''', [last_name, first_name])
+            
+            logger.debug("Form filled with basic info")
+            
+            # Select senator type and state if provided
+            self._page.check('.senator_filer')
+            if state:
+                self._page.select_option('#senatorFilerState', state)
+                logger.debug(f"Selected state: {state}")
+            
+            # Select report types if specified
+            if report_types:
+                selectors = [
+                    f'input[name="report_type"][value="{self.REPORT_TYPE_MAP[rt]}"]'
+                    for rt in report_types if rt in self.REPORT_TYPE_MAP
+                ]
+                if selectors:
+                    self._page.evaluate(
+                        'selectors => selectors.forEach(s => document.querySelector(s).checked = true)',
+                        selectors
+                    )
+                logger.debug(f"Selected report types: {report_types}")
+            
+            # Submit search and wait for results
+            logger.debug("Submitting search form")
+            self._page.click('button[type="submit"]')
+            
+            has_results = self._wait_for_results_loading()
+            logger.debug(f"Search results loaded, has_results: {has_results}")
+            
+            if not has_results:
+                logger.debug("No results found")
+                return []
+            
+            # Extract results from all pages
+            all_results = []
+            page_num = 1
+            
+            while True:
+                logger.debug(f"Processing page {page_num}")
+                results = self._extract_page_results()
+                logger.debug(f"Found {len(results)} results on page {page_num}")
+                all_results.extend(results)
+                
+                # Check for next page
+                next_button = self._page.query_selector('.paginate_button.next:not(.disabled)')
+                if not next_button:
+                    logger.debug("No more pages")
+                    break
                     
-                    // Clear any existing report type selections
-                    document.querySelectorAll('input[name="report_type"]')
-                        .forEach(el => el.checked = false);
-                }''', [last_name, first_name])
+                # Load next page
+                next_button.click()
+                self._wait_for_results_loading()
+                page_num += 1
+            
+            # Filter out candidate reports if not wanted
+            if not include_candidate_reports:
+                all_results = [
+                    r for r in all_results 
+                    if 'candidate' not in r['report_type'].lower()
+                ]
                 
-                logger.debug("Form filled with basic info")
+            logger.debug(f"Total results found: {len(all_results)}")
+            return all_results
                 
-                # Select senator type and state if provided
-                self._page.check('.senator_filer')
-                if state:
-                    self._page.select_option('#senatorFilerState', state)
-                    logger.debug(f"Selected state: {state}")
-                
-                # Select report types if specified
-                if report_types:
-                    selectors = [
-                        f'input[name="report_type"][value="{self.REPORT_TYPE_MAP[rt]}"]'
-                        for rt in report_types if rt in self.REPORT_TYPE_MAP
-                    ]
-                    if selectors:
-                        self._page.evaluate(
-                            'selectors => selectors.forEach(s => document.querySelector(s).checked = true)',
-                            selectors
-                        )
-                    logger.debug(f"Selected report types: {report_types}")
-                
-                # Submit search and wait for results
-                logger.debug("Submitting search form")
-                self._page.click('button[type="submit"]')
-                
-                has_results = self._wait_for_results_loading()
-                logger.debug(f"Search results loaded, has_results: {has_results}")
-                
-                if not has_results:
-                    logger.debug("No results found")
-                    return []
-                
-                # Extract results from all pages
-                all_results = []
-                page_num = 1
-                
-                while True:
-                    logger.debug(f"Processing page {page_num}")
-                    results = self._extract_page_results()
-                    logger.debug(f"Found {len(results)} results on page {page_num}")
-                    all_results.extend(results)
-                    
-                    # Check for next page
-                    next_button = self._page.query_selector('.paginate_button.next:not(.disabled)')
-                    if not next_button:
-                        logger.debug("No more pages")
-                        break
-                        
-                    # Load next page
-                    next_button.click()
-                    self._wait_for_results_loading()
-                    page_num += 1
-                
-                # Filter out candidate reports if not wanted
-                if not include_candidate_reports:
-                    all_results = [
-                        r for r in all_results 
-                        if 'candidate' not in r['report_type'].lower()
-                    ]
-                    
-                logger.debug(f"Total results found: {len(all_results)}")
-                return all_results
-                
-            except Exception as e:
-                logger.error(f"Search attempt {attempt + 1} failed: {str(e)}")
-                if attempt == self.MAX_RETRIES - 1:
-                    raise
-                time.sleep(self.RETRY_DELAY)
-                
+        except PlaywrightTimeout as e:
+            raise TimeoutError("Search results did not load within timeout period") from e
+        except Exception as e:
+            raise ValueError(f"Failed to search disclosures: {str(e)}") from e
+
     def _extract_page_results(self) -> List[Dict[str, Any]]:
         """Extract disclosure information from the current results page.
         
@@ -399,9 +440,6 @@ class SenateDisclosureScraper:
     def download_disclosure_pdf(self, pdf_url: str, download_dir: Optional[str] = None) -> str:
         """Download a specific disclosure PDF.
         
-        This method handles both direct PDF downloads and web table conversions.
-        For web tables, it will generate a PDF from the printer-friendly version.
-        
         Args:
             pdf_url: URL of the filing to download
             download_dir: Optional directory to save the file. If None, uses a temp directory.
@@ -415,18 +453,15 @@ class SenateDisclosureScraper:
         if not download_dir:
             download_dir = tempfile.mkdtemp()
             
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                # Process the filing and get the PDF path
-                result = self.process_filing(pdf_url, download_dir)
-                if not result['file_path']:
-                    raise ValueError("Failed to get PDF file path")
-                return result['file_path']
+        try:
+            # Process the filing and get the PDF path
+            result = self.process_filing(pdf_url, download_dir)
+            if not result['file_path']:
+                raise ValueError("Failed to get PDF file path")
+            return result['file_path']
                 
-            except Exception as e:
-                if attempt == self.MAX_RETRIES - 1:
-                    raise ValueError(f"Failed to download/generate PDF: {str(e)}") from e
-                time.sleep(self.RETRY_DELAY)
+        except Exception as e:
+            raise ValueError(f"Failed to download/generate PDF: {str(e)}") from e
             
     def _determine_filing_type(self, report_url: str) -> str:
         """Determine whether a filing is a web table or PDF.
