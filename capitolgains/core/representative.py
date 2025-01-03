@@ -6,8 +6,11 @@ methods to fetch both periodic transaction reports (PTRs) and annual financial d
 """
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, ClassVar
 from capitolgains.utils.representative_scraper import HouseDisclosureScraper
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Representative:
     """Class representing a House Representative and their financial disclosures.
@@ -24,6 +27,46 @@ class Representative:
         district: District number (optional)
         _cached_disclosures: Internal cache mapping years to disclosure data
     """
+    
+    @classmethod
+    def get_member_disclosures(
+        cls,
+        name: str,
+        year: Optional[str] = None,
+        state: Optional[str] = None,
+        district: Optional[str] = None,
+        headless: bool = True
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Convenience method for single-member queries.
+        
+        This method handles the scraper lifecycle management for simple single-member
+        queries. For bulk processing, use the scraper directly with context management.
+        
+        Args:
+            name: Representative's last name
+            year: Year to search for (defaults to current year)
+            state: Two-letter state code (optional)
+            district: District number (optional)
+            headless: Whether to run browser in headless mode
+            
+        Returns:
+            Dictionary with categorized disclosures:
+            {
+                'trades': List of PTR disclosures,
+                'annual': List of annual disclosures (FD)
+            }
+            
+        Example:
+            ```python
+            # Simple single-member usage
+            disclosures = Representative.get_member_disclosures(
+                "Pelosi", state="CA", district="11", year="2023"
+            )
+            ```
+        """
+        with HouseDisclosureScraper(headless=headless) as scraper:
+            rep = cls(name, state=state, district=district)
+            return rep.get_disclosures(scraper, year=year)
     
     def __init__(self, name: str, state: Optional[str] = None, district: Optional[str] = None):
         """Initialize a Representative instance.

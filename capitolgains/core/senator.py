@@ -11,7 +11,7 @@ The Senate disclosure system has some key differences from the House system:
 """
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, ClassVar
 from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 import logging
 
@@ -36,6 +36,50 @@ class Senator:
         state: Two-letter state code (optional)
         _cached_disclosures: Internal cache mapping years to disclosure data
     """
+    
+    @classmethod
+    def get_member_disclosures(
+        cls,
+        name: str,
+        year: Optional[str] = None,
+        first_name: Optional[str] = None,
+        state: Optional[str] = None,
+        headless: bool = True,
+        include_candidate_reports: bool = False,
+        test_mode: bool = False
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Convenience method for single-member queries.
+        
+        This method handles the scraper lifecycle management for simple single-member
+        queries. For bulk processing of multiple senators, use the scraper's
+        process_members method instead.
+        
+        Args:
+            name: Senator's last name
+            year: Year to search for (defaults to current year)
+            first_name: Senator's first name (optional)
+            state: Two-letter state code (optional)
+            headless: Whether to run browser in headless mode
+            include_candidate_reports: Whether to include candidate reports
+            test_mode: If True, only return one match per category
+            
+        Returns:
+            Dictionary with categorized disclosures
+            
+        Example:
+            ```python
+            # Simple single-member usage
+            disclosures = Senator.get_member_disclosures("Warren", year="2023")
+            ```
+        """
+        with SenateDisclosureScraper(headless=headless) as scraper:
+            senator = cls(name, first_name=first_name, state=state)
+            return senator.get_disclosures(
+                scraper,
+                year=year,
+                include_candidate_reports=include_candidate_reports,
+                test_mode=test_mode
+            )
     
     def __init__(self, name: str, first_name: Optional[str] = None, state: Optional[str] = None):
         """Initialize a Senator instance.
