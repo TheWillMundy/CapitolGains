@@ -307,6 +307,8 @@ class HouseDisclosureScraper:
                 logger.warning("No valid results found in table")
             else:
                 logger.info(f"Found {len(results)} valid results")
+                for result in results:
+                    logger.info(f"Raw result: {result}")
                 
             return results
             
@@ -320,7 +322,8 @@ class HouseDisclosureScraper:
         
         Args:
             pdf_url: URL of the PDF to download
-            download_dir: Optional directory to save the file. If None, uses a temp directory.
+            download_dir: Optional directory to save the file. If None, saves to
+                        example_output/house/[member_name]/
             
         Returns:
             Path to the downloaded file
@@ -329,14 +332,22 @@ class HouseDisclosureScraper:
             ValueError: If the download fails or the PDF is invalid
         """
         if not download_dir:
-            download_dir = tempfile.mkdtemp()
+            # Create default directory structure in example_output
+            base_dir = Path("example_output/house")
+            base_dir.mkdir(parents=True, exist_ok=True)
+            download_dir = str(base_dir)
+            
+        logger.debug(f"Download directory: {download_dir}")
             
         # Ensure URL starts with base URL and has proper formatting
+        original_url = pdf_url
         if not pdf_url.startswith("https://disclosures-clerk.house.gov"):
             if pdf_url.startswith('/'):
                 pdf_url = f"https://disclosures-clerk.house.gov{pdf_url}"
             else:
                 pdf_url = f"https://disclosures-clerk.house.gov/{pdf_url}"
+        logger.debug(f"Original URL: {original_url}")
+        logger.debug(f"Processed URL: {pdf_url}")
         
         try:
             logger.info(f"Downloading PDF from {pdf_url}")
@@ -348,26 +359,51 @@ class HouseDisclosureScraper:
             }
             self._page.set_extra_http_headers(headers)
             
-            # Get the filename from the URL
+            # Get the filename from the URL or generate one if not available
             filename = os.path.basename(pdf_url)
+            logger.debug(f"Original filename from URL: {filename}")
+            if not filename or not filename.endswith('.pdf'):
+                timestamp = int(time.time())
+                filename = f"report_{timestamp}.pdf"
+            logger.debug(f"Final filename: {filename}")
+                
             download_path = os.path.join(download_dir, filename)
+            logger.debug(f"Full download path: {download_path}")
             
             # Download the file directly using Playwright's request API
+            logger.debug("Sending GET request...")
             response = self._page.request.get(pdf_url)
+            logger.debug(f"Response status: {response.status}")
+            logger.debug(f"Response headers: {response.headers}")
+            
             if response.status != 200:
                 raise ValueError(f"Failed to download PDF: HTTP {response.status}")
                 
             # Save the file
+            logger.debug("Writing response body to file...")
+            content = response.body()
+            logger.debug(f"Response body size: {len(content)} bytes")
+            
             with open(download_path, 'wb') as f:
-                f.write(response.body())
+                f.write(content)
                 
             # Verify the download
-            if not os.path.exists(download_path) or os.path.getsize(download_path) == 0:
-                raise ValueError("Downloaded PDF is empty or does not exist")
+            if not os.path.exists(download_path):
+                raise ValueError("Downloaded file does not exist")
+            
+            file_size = os.path.getsize(download_path)
+            logger.debug(f"Saved file size: {file_size} bytes")
+            
+            if file_size == 0:
+                raise ValueError("Downloaded PDF is empty")
                 
+            logger.info(f"Successfully downloaded PDF to: {download_path}")
             return download_path
             
         except Exception as e:
+            logger.error(f"Failed to download PDF: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Error details:", exc_info=True)
             raise ValueError(f"Failed to download PDF: {str(e)}") from e
             
     def get_available_years(self) -> List[str]:

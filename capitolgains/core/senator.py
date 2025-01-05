@@ -214,26 +214,21 @@ class Senator:
     def _matches_senator(self, disclosure: Dict[str, Any]) -> bool:
         """Check if a disclosure matches this senator's details.
         
-        The Senate system returns names in various formats:
-        - First name might include middle initial/name
-        - Office field might not include state
-        - Last name might be repeated in office field
-        
         Args:
             disclosure: Disclosure dictionary from search results
             
         Returns:
-            True if the disclosure matches this senator's details, False otherwise
+            True if the disclosure matches this senator's details
         """
-        logger.info(f"Checking match for disclosure: {disclosure['first_name']} {disclosure['last_name']}, {disclosure['office']}")
+        logger.info(f"Checking disclosure: {disclosure}")
         
         # Check last name first (most reliable)
         if disclosure['last_name'].lower() != self.name.lower():
-            logger.info(f"Last name mismatch: {disclosure['last_name'].lower()} vs {self.name.lower()}")
+            logger.info(f"Last name mismatch: {disclosure['last_name']} vs {self.name}")
             return False
             
-        # Check first name if provided - more lenient matching
-        if self.first_name:
+        # Check first name if provided with leniency
+        if self.first_name and disclosure.get('first_name'):
             disclosure_first = disclosure['first_name'].lower()
             our_first = self.first_name.lower()
             # Accept if either name starts with the other
@@ -241,20 +236,17 @@ class Senator:
                 logger.info(f"First name mismatch: {disclosure_first} vs {our_first}")
                 return False
         
-        # For state matching, we'll be more lenient since the office field is inconsistent
-        # If we have a state requirement but can't verify it, we'll trust the other matches
-        # This works because we're already filtering by name in the search
-        if self.state:
+        # Check state if provided
+        if self.state and disclosure.get('office'):
             office = disclosure['office'].lower()
             state_patterns = [
                 f", {self.state.lower()}",  # "Tuberville, Tommy (Senator), AL"
                 f"({self.state.lower()})",  # "Tuberville (AL)"
-                f" {self.state.lower()} ",  # "AL Senator"
-                self.state.lower()          # Just the state somewhere
+                f" {self.state.lower()} "   # "Senator AL East"
             ]
-            state_found = any(pattern in office for pattern in state_patterns)
-            if not state_found:
-                logger.info(f"Note: State {self.state} not found in office field: {office} - trusting name match")
+            if not any(pattern in office for pattern in state_patterns):
+                logger.info(f"State {self.state} not found in office: {office}")
+                return False
         
         logger.info("Disclosure matches senator")
         return True

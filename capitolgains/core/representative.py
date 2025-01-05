@@ -127,11 +127,21 @@ class Representative:
             if self._matches_representative(d)
         ]
         
+        # Log filing types for debugging
+        logger.info("Filing types found:")
+        for d in filtered_disclosures:
+            logger.info(f"Filing type: {d['filing_type']}")
+        
         # Categorize disclosures by type
         categorized = {
             'trades': [d for d in filtered_disclosures if 'PTR' in d['filing_type']],
             'annual': [d for d in filtered_disclosures if 'FD' in d['filing_type']]
         }
+        
+        # Log categorization results
+        logger.info(f"Categorized {len(filtered_disclosures)} disclosures:")
+        logger.info(f"- Trades: {len(categorized['trades'])}")
+        logger.info(f"- Annual: {len(categorized['annual'])}")
         
         # Cache the results
         self._cached_disclosures[year] = categorized
@@ -144,24 +154,56 @@ class Representative:
             disclosure: Disclosure dictionary from search results
             
         Returns:
-            True if the disclosure matches this representative's state and district
-            (if specified), False otherwise.
+            True if the disclosure matches this representative's details
         """
-        office_parts = disclosure['office'].split('-')
-        if len(office_parts) != 2:
-            return False
-            
-        disc_state = office_parts[0].strip()
-        disc_district = office_parts[1].strip()
+        logger.info(f"Checking disclosure: {disclosure}")
+        office = disclosure.get('office', '')
         
-        # If state is specified, it must match
-        if self.state and disc_state != self.state:
+        # If we have state/district and office is present, use that for matching
+        if office and (self.state or self.district):
+            # Try hyphenated format first (e.g., "CA-11")
+            office_parts = office.split('-')
+            if len(office_parts) == 2:
+                disc_state = office_parts[0].strip()
+                disc_district = office_parts[1].strip()
+            else:
+                # Try non-hyphenated format (e.g., "CA11")
+                if len(office) >= 3:  # Need at least "XX1"
+                    disc_state = office[:2].strip()
+                    disc_district = office[2:].strip()
+                else:
+                    logger.warning(f"Invalid office format: {office}")
+                    return False
+            
+            # If state is specified and doesn't match, return False
+            if self.state and disc_state != self.state:
+                logger.warning(f"State mismatch: {disc_state} != {self.state}")
+                return False
+                
+            # If district is specified and doesn't match, return False
+            if self.district and disc_district != self.district:
+                logger.warning(f"District mismatch: {disc_district} != {self.district}")
+                return False
+                
+            # If we got here and had either state or district specified, it's a match
+            logger.info("Disclosure matches representative by office")
+            return True
+            
+        # If we get here, either:
+        # 1. We don't have state/district info to match against
+        # 2. Office wasn't present in the disclosure
+        # In these cases, we just verify the name matches
+        name = disclosure.get('name', '').lower()
+        if not name:
+            logger.warning("No name found in disclosure")
             return False
             
-        # If district is specified, it must match
-        if self.district and disc_district != self.district:
+        # Simple case-insensitive check if the last name appears in the full name
+        if self.name.lower() not in name:
+            logger.warning(f"Name mismatch: {self.name} not found in {name}")
             return False
             
+        logger.info("Disclosure matches representative by name")
         return True
         
     def get_recent_trades(self, scraper: HouseDisclosureScraper, year: Optional[str] = None) -> List[Dict[str, Any]]:

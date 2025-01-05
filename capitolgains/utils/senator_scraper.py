@@ -437,11 +437,12 @@ class SenateDisclosureScraper:
                 
         return results
         
-    def download_disclosure_pdf(self, pdf_url: str, download_dir: Optional[str] = None) -> str:
+    def download_disclosure_pdf(self, pdf_url: str, report_type: Optional[str] = None, download_dir: Optional[str] = None) -> str:
         """Download a specific disclosure PDF.
         
         Args:
             pdf_url: URL of the filing to download
+            report_type: Type of report ('annual', 'ptr', 'amendment', etc)
             download_dir: Optional directory to save the file. If None, uses a temp directory.
             
         Returns:
@@ -455,7 +456,7 @@ class SenateDisclosureScraper:
             
         try:
             # Process the filing and get the PDF path
-            result = self.process_filing(pdf_url, download_dir)
+            result = self.process_filing(pdf_url, report_type=report_type, download_dir=download_dir)
             if not result['file_path']:
                 raise ValueError("Failed to get PDF file path")
             return result['file_path']
@@ -476,15 +477,67 @@ class SenateDisclosureScraper:
             'web_table' or 'pdf' indicating the filing type
         """
         try:
+            logger.info(f"Determining filing type for URL: {report_url}")
             self._page.goto(report_url)
             self._page.wait_for_load_state('networkidle')
             
-            # Check for web table
-            web_table = self._page.query_selector('#reportDataTable')
-            if web_table:
-                return 'web_table'
+            # Log page title and URL to verify we're on the right page
+            title = self._page.title()
+            current_url = self._page.url
+            logger.info(f"Page loaded - Title: {title}, URL: {current_url}")
+            
+            # Check for various indicators of a web table report
+            indicators = self._page.evaluate('''() => {
+                // Check for specific table IDs we know about
+                const hasGridItems = !!document.querySelector('#grid_items');
+                const hasReportDataTable = !!document.querySelector('#reportDataTable');
                 
-            # If no web table, assume it's a PDF filing
+                // Check for sections with tables (common in annual reports)
+                const sections = Array.from(document.querySelectorAll('section.card'));
+                const sectionsWithTables = sections.filter(s => s.querySelector('table')).length;
+                
+                // Check for specific headers that indicate an annual report
+                const headers = Array.from(document.querySelectorAll('h3')).map(h => h.innerText.toLowerCase());
+                const hasAnnualHeaders = headers.some(h => 
+                    h.includes('honoraria payments') || 
+                    h.includes('earned and non-investment income') ||
+                    h.includes('assets') ||
+                    h.includes('transactions')
+                );
+                
+                // Check for PTR-specific indicators
+                const h1Text = document.querySelector('h1')?.innerText?.toLowerCase() || '';
+                const isPTR = h1Text.includes('periodic transaction report');
+                const hasTransactionSummary = !!document.querySelector('.list-inline-item');
+                const hasTransactionTable = sections.some(s => 
+                    s.querySelector('table') && 
+                    s.querySelector('h3')?.innerText?.toLowerCase()?.includes('transactions')
+                );
+                
+                return {
+                    hasGridItems,
+                    hasReportDataTable,
+                    sectionsWithTables,
+                    hasAnnualHeaders,
+                    isPTR,
+                    hasTransactionSummary,
+                    hasTransactionTable,
+                    totalTables: document.querySelectorAll('table').length,
+                    h1Text: h1Text
+                };
+            }''')
+            
+            logger.info(f"Web table indicators: {indicators}")
+            
+            # If we find any strong indicators of a web table report
+            if (indicators['hasGridItems'] or 
+                indicators['hasReportDataTable'] or 
+                (indicators['sectionsWithTables'] > 0 and indicators['hasAnnualHeaders']) or
+                (indicators['isPTR'] and indicators['hasTransactionTable'])):
+                logger.info("Detected web table format based on page structure")
+                return 'web_table'
+            
+            logger.info("No web table indicators found - treating as PDF filing")
             return 'pdf'
             
         except Exception as e:
@@ -512,116 +565,49 @@ class SenateDisclosureScraper:
             
         return pdf_path
             
-    def _scrape_web_table(self, report_url: str) -> Dict[str, Any]:
-        """Scrape data from a web table filing.
-        
-        Args:
-            report_url: URL of the web table report
-            
-        Returns:
-            Dictionary containing the parsed web table data
-        """
-        try:
-            self._page.goto(report_url)
-            self._page.wait_for_selector('#reportDataTable', state='visible', timeout=10000)
-            
-            # Extract table data using JavaScript for better performance
-            table_data = self._page.evaluate('''() => {
-                const tables = Array.from(document.querySelectorAll('#reportDataTable'));
-                return tables.map(table => {
-                    const headers = Array.from(table.querySelectorAll('thead th'))
-                        .map(th => th.innerText.trim().toLowerCase());
-                        
-                    const rows = Array.from(table.querySelectorAll('tbody tr'))
-                        .map(row => {
-                            const cells = Array.from(row.querySelectorAll('td'));
-                            return Object.fromEntries(
-                                headers.map((header, i) => [header, cells[i]?.innerText?.trim() || ''])
-                            );
-                        });
-                        
-                    return {
-                        headers: headers,
-                        rows: rows
-                    };
-                });
-            }''')
-            
-            if not table_data:
-                raise ValueError("Failed to extract web table data")
-                
-            return {
-                'type': 'web_table',
-                'tables': table_data
-            }
-            
-        except Exception as e:
-            raise ValueError(f"Failed to scrape web table: {str(e)}") from e
-            
-    def process_filing(self, report_url: str, download_dir: Optional[str] = None) -> Dict[str, Any]:
+    def process_filing(self, report_url: str, report_type: Optional[str] = None, download_dir: Optional[str] = None) -> Dict[str, Any]:
         """Process a filing, handling both web tables and PDFs.
         
         This method:
         1. Determines if the filing is a web table or PDF
-        2. Routes to appropriate handler
-        3. Returns structured data and/or file paths
+        2. Routes to appropriate handler based on report type
+        3. For PDFs: Downloads the PDF file
         
         Args:
             report_url: URL of the report to process
-            download_dir: Optional directory for saving files
+            report_type: Type of report ('annual', 'ptr', 'amendment', etc). Used for routing.
+            download_dir: Optional directory for saving PDFs. If None, saves to
+                        example_output/senate/[member_name]/
             
         Returns:
             Dictionary containing:
-            - 'type': 'web_table' or 'pdf'
-            - 'data': Parsed data for web tables
-            - 'file_path': Path to PDF file
+            {
+                'type': 'web_table' | 'pdf',
+                'data': Optional[Dict] - Structured data for web tables,
+                'file_path': Optional[str] - Path to PDF file for PDF reports
+            }
         """
         if not download_dir:
-            download_dir = tempfile.mkdtemp()
+            # Create default directory structure in example_output
+            base_dir = Path("example_output/senate")
+            base_dir.mkdir(parents=True, exist_ok=True)
+            download_dir = str(base_dir)
             
         filing_type = self._determine_filing_type(report_url)
         logger.debug(f"Processing {filing_type} filing from {report_url}")
         
         if filing_type == 'web_table':
-            # First get the full report PDF
-            pdf_path = None
-            try:
-                # Look for printer-friendly version
-                printer_link = self._page.query_selector('a[href*="print"]:has-text("Printer-Friendly")')
-                if printer_link:
-                    # Store current URL to return to later
-                    current_url = self._page.url
-                    
-                    # Get printer-friendly URL and navigate to it
-                    printer_url = printer_link.get_attribute('href')
-                    if printer_url.startswith('/'):
-                        printer_url = f"{self.BASE_URL}{printer_url}"
-                    
-                    logger.debug(f"Navigating to printer-friendly version: {printer_url}")    
-                    # Navigate to printer-friendly version
-                    self._page.goto(printer_url)
-                    self._page.wait_for_load_state('networkidle')
-                    
-                    # Generate PDF from the printer-friendly page
-                    pdf_path = self._generate_pdf(download_dir)
-                    logger.debug(f"Generated PDF at: {pdf_path}")
-                    
-                    # Return to original page
-                    self._page.goto(current_url)
-                    self._page.wait_for_load_state('networkidle')
-                    
-            except Exception as e:
-                logger.warning(f"Failed to generate PDF from web table: {str(e)}")
-                
-            # Then scrape the web tables
-            data = self._scrape_web_table(report_url)
-            
-            return {
-                'type': 'web_table',
-                'data': data,
-                'file_path': pdf_path
-            }
-            
+            # Route to appropriate handler based on report type
+            if report_type == 'annual':
+                return self._scrape_annual_report(report_url)
+            elif report_type == 'ptr':
+                return self._scrape_ptr_report(report_url)
+            elif report_type == 'amendment':
+                return self._scrape_amendment_report(report_url)
+            else:
+                # Default to annual report handler for now
+                logger.warning(f"No specialized handler for {report_type}, using annual report handler")
+                return self._scrape_annual_report(report_url)
         else:  # PDF filing
             try:
                 # Look for printer-friendly version with more flexible selector
@@ -643,8 +629,12 @@ class SenateDisclosureScraper:
                 self._page.wait_for_load_state('networkidle')
                 
                 # Generate PDF from the printer-friendly page
-                pdf_path = self._generate_pdf(download_dir)
-                logger.debug(f"Generated PDF at: {pdf_path}")
+                timestamp = int(time.time())
+                pdf_path = os.path.join(download_dir, f"report_{timestamp}.pdf")
+                self._page.pdf(path=pdf_path, format='Letter')
+                
+                if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                    raise ValueError("Generated PDF is empty or does not exist")
                 
                 # Return to original page
                 self._page.goto(current_url)
@@ -657,4 +647,264 @@ class SenateDisclosureScraper:
                 }
                     
             except Exception as e:
-                raise ValueError(f"Failed to generate PDF: {str(e)}") from e 
+                logger.error(f"Failed to generate PDF: {str(e)}")
+                raise ValueError(f"Failed to generate PDF: {str(e)}") from e
+                
+    def _scrape_annual_report(self, report_url: str) -> Dict[str, Any]:
+        """Scrape data from an annual report web table.
+        
+        Args:
+            report_url: URL of the annual report
+            
+        Returns:
+            Dictionary containing the parsed annual report data
+        """
+        try:
+            return self._scrape_sectioned_disclosure_report(report_url, "annual report")
+        except Exception as e:
+            raise ValueError(f"Failed to scrape annual report: {str(e)}") from e
+
+    def _scrape_amendment_report(self, report_url: str) -> Dict[str, Any]:
+        """Scrape data from an amendment report web table.
+        
+        Args:
+            report_url: URL of the amendment report
+            
+        Returns:
+            Dictionary containing the parsed amendment data
+        """
+        try:
+            return self._scrape_sectioned_disclosure_report(report_url, "amendment report")
+        except Exception as e:
+            raise ValueError(f"Failed to scrape amendment report: {str(e)}") from e
+
+    def _scrape_sectioned_disclosure_report(self, report_url: str, report_type_name: str) -> Dict[str, Any]:
+        """Scrape data from a disclosure report that uses a sectioned format with tables.
+        
+        This handles the common format used by both annual reports and amendments,
+        which contain multiple sections with tables, questions/answers, and attachments.
+        
+        Args:
+            report_url: URL of the report
+            report_type_name: Name of report type for error messages
+            
+        Returns:
+            Dictionary containing the parsed report data with metadata and sections
+        """
+        self._page.goto(report_url)
+        self._page.wait_for_load_state('networkidle')
+        
+        # Extract report metadata
+        metadata = self._page.evaluate('''() => {
+            const h1 = document.querySelector('h1');
+            const h2 = document.querySelector('h2');
+            const filedDate = document.querySelector('p.muted.font-weight-bold');
+            
+            return {
+                title: h1?.innerText?.trim() || '',
+                filer: h2?.innerText?.trim() || '',
+                filed_date: filedDate?.innerText?.trim() || ''
+            };
+        }''')
+        
+        # Extract all tables from sections
+        sections = self._page.evaluate('''() => {
+            const sections = Array.from(document.querySelectorAll('section.card'));
+            return sections.map(section => {
+                const title = section.querySelector('.card-body h3')?.innerText?.trim() || '';
+                const question = section.querySelector('.card-body p')?.innerText?.trim() || '';
+                const answer = section.querySelector('.card-body p strong')?.innerText?.trim() || '';
+                
+                // Handle attachments and comments section
+                if (title === 'Attachments & Comments') {
+                    // For future reference - log raw HTML (commented out)
+                    // console.log('Attachments section HTML:', section.outerHTML);
+                    
+                    const attachmentsText = section.querySelector('.card-body em.muted, .card-body em.text-muted')?.innerText?.trim() || '';
+                    const hasAttachments = !attachmentsText.includes('No attachments added');
+                    
+                    // Look for comments after h4 or after <br> tag
+                    const commentsHeader = section.querySelector('h4.h5');
+                    let comments = '';
+                    if (commentsHeader) {
+                        // Get text content after the header, excluding the header text
+                        const headerParent = commentsHeader.parentElement;
+                        const headerIndex = Array.from(headerParent.childNodes).indexOf(commentsHeader);
+                        comments = Array.from(headerParent.childNodes)
+                            .slice(headerIndex + 1)
+                            .map(node => node.textContent?.trim())
+                            .filter(text => text && !text.includes('No comments added'))
+                            .join(' ')
+                            .trim();
+                    } else {
+                        // Check for comments after <br>
+                        const noCommentsText = section.querySelector('br + em.text-muted')?.innerText?.trim() || '';
+                        if (!noCommentsText.includes('No comments added')) {
+                            comments = noCommentsText;
+                        }
+                    }
+                    
+                    return {
+                        title: title,
+                        has_attachments: hasAttachments,
+                        attachments_text: attachmentsText,
+                        has_comments: comments.length > 0,
+                        comments: comments || null
+                    };
+                }
+                
+                // Extract table data if present
+                const table = section.querySelector('table');
+                let tableData = null;
+                if (table) {
+                    const headers = Array.from(table.querySelectorAll('thead th'))
+                        .map(th => th.innerText.trim());
+                        
+                    const rows = Array.from(table.querySelectorAll('tbody tr'))
+                        .map(row => {
+                            const cells = Array.from(row.querySelectorAll('td'));
+                            return Object.fromEntries(
+                                headers.map((header, i) => [
+                                    header.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+                                    cells[i]?.innerText?.trim() || ''
+                                ])
+                            );
+                        });
+                        
+                    tableData = {
+                        headers: headers,
+                        rows: rows
+                    };
+                }
+                
+                return {
+                    title: title,
+                    question: question,
+                    answer: answer,
+                    table: tableData
+                };
+            });
+        }''')
+        
+        if not sections:
+            raise ValueError(f"Failed to extract sections from {report_type_name}")
+            
+        return {
+            'type': 'web_table',
+            'metadata': metadata,
+            'sections': sections
+        }
+        
+    def _scrape_ptr_report(self, report_url: str) -> Dict[str, Any]:
+        """Scrape data from a Periodic Transaction Report (PTR) web table.
+        
+        Args:
+            report_url: URL of the PTR
+            
+        Returns:
+            Dictionary containing the parsed PTR data
+        """
+        try:
+            self._page.goto(report_url)
+            self._page.wait_for_load_state('networkidle')
+            
+            # Extract report metadata
+            metadata = self._page.evaluate('''() => {
+                const h1 = document.querySelector('h1');
+                const h2 = document.querySelector('h2');
+                const filedDate = document.querySelector('p.muted');
+                
+                return {
+                    title: h1?.innerText?.trim() || '',
+                    filer: h2?.innerText?.trim() || '',
+                    filed_date: filedDate?.innerText?.trim() || ''
+                };
+            }''')
+            
+            # Extract transactions section
+            transactions = self._page.evaluate('''() => {
+                const section = document.querySelector('section.card');
+                if (!section) return null;
+                
+                // Get transaction summary
+                const summaryItems = Array.from(section.querySelectorAll('.list-inline-item'))
+                    .map(item => item.innerText.trim());
+                
+                // Extract table data
+                const table = section.querySelector('table');
+                let tableData = null;
+                if (table) {
+                    const headers = Array.from(table.querySelectorAll('thead th'))
+                        .map(th => th.innerText.trim());
+                        
+                    const rows = Array.from(table.querySelectorAll('tbody tr'))
+                        .map(row => {
+                            const cells = Array.from(row.querySelectorAll('td'));
+                            const rowData = Object.fromEntries(
+                                headers.map((header, i) => {
+                                    let value = cells[i]?.innerText?.trim() || '';
+                                    
+                                    // Handle special case for asset details
+                                    if (header === 'Asset Name') {
+                                        const details = cells[i]?.querySelector('.text-muted');
+                                        if (details) {
+                                            const detailsText = details.innerText.trim();
+                                            // Parse option details if present
+                                            if (detailsText.includes('Option Type:')) {
+                                                const optionMatch = detailsText.match(/Option Type: (.*?)(?:\s+Strike price:|$)/);
+                                                const strikeMatch = detailsText.match(/Strike price: \$([\d.]+)/);
+                                                const expiresMatch = detailsText.match(/Expires: ([\d/]+)/);
+                                                
+                                                return [header.toLowerCase().replace(/[^a-z0-9]/g, '_'), {
+                                                    name: cells[i].childNodes[0].textContent.trim(),
+                                                    option_type: optionMatch ? optionMatch[1].trim() : null,
+                                                    strike_price: strikeMatch ? parseFloat(strikeMatch[1]) : null,
+                                                    expiration_date: expiresMatch ? expiresMatch[1] : null
+                                                }];
+                                            }
+                                            // Parse bond/security details if present
+                                            else if (detailsText.includes('Rate/Coupon:')) {
+                                                const rateMatch = detailsText.match(/Rate\/Coupon: ([\d.]+)%/);
+                                                const maturesMatch = detailsText.match(/Matures: ([\d/]+)/);
+                                                
+                                                return [header.toLowerCase().replace(/[^a-z0-9]/g, '_'), {
+                                                    name: cells[i].childNodes[0].textContent.trim(),
+                                                    rate: rateMatch ? parseFloat(rateMatch[1]) : null,
+                                                    maturity_date: maturesMatch ? maturesMatch[1] : null
+                                                }];
+                                            }
+                                        }
+                                    }
+                                    
+                                    return [header.toLowerCase().replace(/[^a-z0-9]/g, '_'), value];
+                                })
+                            );
+                            
+                            return rowData;
+                        });
+                        
+                    tableData = {
+                        headers: headers,
+                        rows: rows
+                    };
+                }
+                
+                return {
+                    summary: summaryItems,
+                    table: tableData
+                };
+            }''')
+            
+            if not transactions:
+                raise ValueError("Failed to extract transactions from PTR")
+                
+            return {
+                'type': 'ptr',
+                'metadata': metadata,
+                'sections': {
+                    'transactions': transactions
+                }
+            }
+            
+        except Exception as e:
+            raise ValueError(f"Failed to scrape PTR report: {str(e)}") from e 
