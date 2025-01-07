@@ -6,7 +6,7 @@ methods to fetch both periodic transaction reports (PTRs) and annual financial d
 """
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional, ClassVar
+from typing import List, Dict, Any, Optional, ClassVar, Set
 from capitolgains.utils.representative_scraper import HouseDisclosureScraper
 import logging
 
@@ -28,6 +28,60 @@ class Representative:
         _cached_disclosures: Internal cache mapping years to disclosure data
     """
     
+    # Valid US states and territories
+    VALID_STATES: ClassVar[Set[str]] = {
+        'AL', 'AK', 'AS', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DC', 'DE',
+        'FL', 'GA', 'GU', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY',
+        'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE',
+        'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'MP', 'OH', 'OK',
+        'OR', 'PA', 'PR', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT',
+        'VI', 'VA', 'WA', 'WV', 'WI', 'WY'
+    }
+
+    @staticmethod
+    def validate_year(year: str) -> None:
+        """Validate that a year is valid for searching.
+        
+        Args:
+            year: Year string to validate
+            
+        Raises:
+            ValueError: If the year is invalid
+            
+        Note:
+            - Years must be 1995 or later (when electronic records began)
+            - Current year is valid (though may return no results)
+            - Only strictly future years are invalid
+        """
+        try:
+            year_int = int(year)
+            current_year = datetime.now().year
+            
+            if year_int < 1995:  # House electronic records start from 1995
+                raise ValueError(f"Year must be 1995 or later, got {year}")
+            if year_int > current_year:  # Only block strictly future years
+                raise ValueError(f"Year cannot be in the future (current year is {current_year}), got {year}")
+        except ValueError as e:
+            if "invalid literal for int()" in str(e):
+                raise ValueError(f"Invalid year format: {year}. Must be a valid year number.")
+            raise
+
+    @classmethod
+    def validate_state(cls, state: Optional[str]) -> None:
+        """Validate that a state code is valid.
+        
+        Args:
+            state: Two-letter state code to validate, or None
+            
+        Raises:
+            ValueError: If the state code is invalid
+        """
+        if state is not None and state not in cls.VALID_STATES:
+            valid_states = ', '.join(sorted(cls.VALID_STATES))
+            raise ValueError(
+                f"Invalid state code: {state}. Must be one of: {valid_states}"
+            )
+
     @classmethod
     def get_member_disclosures(
         cls,
@@ -64,6 +118,12 @@ class Representative:
             )
             ```
         """
+        # Validate inputs before creating scraper
+        if year is None:
+            year = str(datetime.now().year)
+        cls.validate_year(year)
+        cls.validate_state(state)
+        
         with HouseDisclosureScraper(headless=headless) as scraper:
             rep = cls(name, state=state, district=district)
             return rep.get_disclosures(scraper, year=year)
@@ -81,6 +141,7 @@ class Representative:
             by ensuring only disclosures from the correct representative are returned.
         """
         self.name = name
+        self.validate_state(state)  # Validate state on initialization
         self.state = state
         self.district = district
         self._cached_disclosures: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
@@ -108,6 +169,9 @@ class Representative:
         """
         if not year:
             year = str(datetime.now().year)
+            
+        # Validate year before making any requests
+        Representative.validate_year(year)  # Use static method directly
             
         # Check cache first for efficiency
         if year in self._cached_disclosures:

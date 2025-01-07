@@ -15,6 +15,7 @@ from pathlib import Path
 import tempfile
 from typing import List, Optional, Dict, Any, Tuple, Union
 from playwright.sync_api import sync_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
+from datetime import datetime
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -269,11 +270,13 @@ class SenateDisclosureScraper:
     def search_member_disclosures(
         self,
         last_name: str,
-        filing_year: str,
+        filing_year: Optional[str] = None,
         first_name: Optional[str] = None,
         state: Optional[str] = None,
         report_types: Optional[List[str]] = None,
-        include_candidate_reports: bool = False
+        include_candidate_reports: bool = False,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Search for a specific senator's financial disclosures.
         
@@ -285,37 +288,74 @@ class SenateDisclosureScraper:
         
         Args:
             last_name: Senator's last name
-            filing_year: Year to search for
+            filing_year: Year to search for (optional, will be converted to date range)
             first_name: Optional first name for more specific searches
             state: Optional two-letter state code
             report_types: Optional list of report types to search for
                         ('annual', 'ptr', 'extension', 'blind_trust', 'other')
             include_candidate_reports: Whether to include candidate reports in results
+            start_date: Optional start date in MM/DD/YYYY format
+            end_date: Optional end date in MM/DD/YYYY format
             
         Returns:
             List of dictionaries containing disclosure information
             
-        Raises:
-            TimeoutError: If the search results don't load within timeout period
-            ValueError: If the search form cannot be submitted or results cannot be processed
+        Note:
+            Date handling:
+            - If filing_year is provided, it will be converted to a date range for that year
+            - If start_date/end_date are provided, they take precedence over filing_year
+            - Dates must be in MM/DD/YYYY format
+            - Only reports from 2012 onwards are available
         """
         try:
-            logger.debug(f"Starting search for {first_name} {last_name}, {state}, year {filing_year}")
+            logger.debug(f"Starting search for {first_name} {last_name}, {state}")
+            
+            # Handle date parameters
+            if not start_date and not end_date and filing_year:
+                # Convert year to date range (e.g., "2023" -> "01/01/2023" to "12/31/2023")
+                start_date = f"01/01/{filing_year}"
+                end_date = f"12/31/{filing_year}"
+            
+            # Validate date formats if provided
+            for date_str, date_name in [(start_date, "start_date"), (end_date, "end_date")]:
+                if date_str:
+                    try:
+                        parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
+                        # Ensure date is not before 2012
+                        if parsed_date.year < 2012:
+                            raise ValueError(f"Senate reports are only available from 2012 onwards")
+                    except ValueError as e:
+                        if "unconverted data remains" in str(e) or "does not match format" in str(e):
+                            raise ValueError(f"Invalid date format for {date_name}. Must be MM/DD/YYYY")
+                        raise
+            
+            # Validate start_date is before end_date if both are provided
+            if start_date and end_date:
+                start = datetime.strptime(start_date, "%m/%d/%Y")
+                end = datetime.strptime(end_date, "%m/%d/%Y")
+                if end < start:
+                    raise ValueError("End date cannot be before start date")
+            
             # Ensure we have a valid session on the search page
             self.with_session(f"{self.BASE_URL}{self.SEARCH_PATH}")
             self._wait_for_search_form()
             
             # Fill form using efficient JavaScript evaluation
-            self._page.evaluate('''([lastName, firstName]) => {
+            self._page.evaluate('''([lastName, firstName, startDate, endDate]) => {
                 const ln = document.getElementById('lastName');
                 const fn = document.getElementById('firstName');
+                const sd = document.getElementById('fromDate');
+                const ed = document.getElementById('toDate');
+                
                 ln.value = lastName;
                 if (firstName) fn.value = firstName;
+                if (startDate) sd.value = startDate;
+                if (endDate) ed.value = endDate;
                 
                 // Clear any existing report type selections
                 document.querySelectorAll('input[name="report_type"]')
                     .forEach(el => el.checked = false);
-            }''', [last_name, first_name])
+            }''', [last_name, first_name, start_date, end_date])
             
             logger.debug("Form filled with basic info")
             

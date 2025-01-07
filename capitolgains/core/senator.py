@@ -11,7 +11,7 @@ The Senate disclosure system has some key differences from the House system:
 """
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional, ClassVar
+from typing import List, Dict, Any, Optional, ClassVar, Set
 from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 import logging
 
@@ -36,6 +36,37 @@ class Senator:
         state: Two-letter state code (optional)
         _cached_disclosures: Internal cache mapping years to disclosure data
     """
+    
+    # Valid US states for Senate (excludes territories and DC since they don't have Senate representation)
+    VALID_STATES: ClassVar[Set[str]] = {
+        'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+        'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+        'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+        'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+        'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
+    }
+
+    @classmethod
+    def validate_state(cls, state: Optional[str]) -> None:
+        """Validate that a state code is valid for Senate searches.
+        
+        Args:
+            state: Two-letter state code to validate, or None
+            
+        Raises:
+            ValueError: If the state code is invalid
+            
+        Note:
+            The Senate state list is more limited than the House list because:
+            - Territories (AS, GU, PR, VI, MP) don't have Senate representation
+            - DC doesn't have Senate representation
+            - Only the 50 states have Senate representation
+        """
+        if state is not None and state not in cls.VALID_STATES:
+            valid_states = ', '.join(sorted(cls.VALID_STATES))
+            raise ValueError(
+                f"Invalid state code for Senate: {state}. Must be one of: {valid_states}"
+            )
     
     @classmethod
     def get_member_disclosures(
@@ -72,6 +103,9 @@ class Senator:
             disclosures = Senator.get_member_disclosures("Warren", year="2023")
             ```
         """
+        # Validate state before creating scraper
+        cls.validate_state(state)
+        
         with SenateDisclosureScraper(headless=headless) as scraper:
             senator = cls(name, first_name=first_name, state=state)
             return senator.get_disclosures(
@@ -96,6 +130,7 @@ class Senator:
         """
         self.name = name
         self.first_name = first_name
+        self.__class__.validate_state(state)  # Validate state on initialization
         self.state = state
         self._cached_disclosures: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         
@@ -103,12 +138,14 @@ class Senator:
         self, 
         scraper: SenateDisclosureScraper, 
         year: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         include_candidate_reports: bool = False,
         test_mode: bool = False
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all disclosures for the senator for a given year.
+        """Get all disclosures for the senator for a given year or date range.
         
-        This method fetches all types of financial disclosures for the specified year:
+        This method fetches all types of financial disclosures for the specified period:
         - Periodic Transaction Reports (PTRs)
         - Annual Financial Disclosures (FDs)
         - Blind Trust Reports
@@ -119,7 +156,9 @@ class Senator:
         
         Args:
             scraper: Instance of SenateDisclosureScraper to use for fetching data
-            year: Year to search for (defaults to current year)
+            year: Year to search for (defaults to current year if no dates provided)
+            start_date: Optional start date in MM/DD/YYYY format
+            end_date: Optional end date in MM/DD/YYYY format
             include_candidate_reports: Whether to include candidate reports (defaults to False)
             test_mode: If True, only return one match per category (for testing)
             
@@ -133,23 +172,32 @@ class Senator:
                 'extension': List of extension requests,
                 'other': List of other disclosures
             }
+            
+        Note:
+            Date handling:
+            - If start_date/end_date are provided, they take precedence over year
+            - If only year is provided, it will search the entire year
+            - If no dates are provided, defaults to current year
+            - Only reports from 2012 onwards are available
         """
-        if not year:
+        if not year and not start_date and not end_date:
             year = str(datetime.now().year)
             
-        # Create a cache key that includes the candidate reports setting
-        cache_key = f"{year}_{include_candidate_reports}_{test_mode}"
+        # Create a cache key that includes all search parameters
+        cache_key = f"{year}_{start_date}_{end_date}_{include_candidate_reports}_{test_mode}"
         if cache_key in self._cached_disclosures:
             return self._cached_disclosures[cache_key]
             
         # Fetch all disclosure types in one request
         all_disclosures = scraper.search_member_disclosures(
             last_name=self.name,
-            filing_year=year,
+            filing_year=year if not (start_date or end_date) else None,
             first_name=self.first_name,
             state=self.state,
             report_types=['annual', 'ptr', 'extension', 'blind_trust', 'other'],
-            include_candidate_reports=include_candidate_reports
+            include_candidate_reports=include_candidate_reports,
+            start_date=start_date,
+            end_date=end_date
         )
         
         # Filter results to ensure they match our senator
