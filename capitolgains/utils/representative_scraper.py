@@ -16,10 +16,16 @@ import tempfile
 from typing import List, Optional, Dict, Any, Union
 from enum import Enum
 from datetime import datetime
+from appdirs import user_data_dir
 from playwright.sync_api import sync_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Configure app directories
+APP_NAME = "capitolgains"
+APP_AUTHOR = "capitolgains"
+DEFAULT_DOWNLOAD_DIR = user_data_dir(APP_NAME, APP_AUTHOR)
 
 class ReportType(Enum):
     """Valid report types for financial disclosures."""
@@ -380,7 +386,7 @@ class HouseDisclosureScraper:
         Args:
             pdf_url: URL of the PDF to download
             download_dir: Optional directory to save the file. If None, saves to
-                        example_output/house/[member_name]/
+                        platform-specific user data directory (e.g. ~/Library/Application Support/CapitolGains on macOS).
             
         Returns:
             Path to the downloaded file
@@ -389,10 +395,9 @@ class HouseDisclosureScraper:
             ValueError: If the download fails or the PDF is invalid
         """
         if not download_dir:
-            # Create default directory structure in example_output
-            base_dir = Path("example_output/house")
-            base_dir.mkdir(parents=True, exist_ok=True)
-            download_dir = str(base_dir)
+            # Use platform-specific user data directory
+            os.makedirs(DEFAULT_DOWNLOAD_DIR, exist_ok=True)
+            download_dir = DEFAULT_DOWNLOAD_DIR
             
         logger.debug(f"Download directory: {download_dir}")
             

@@ -1,109 +1,191 @@
 # CapitolGains
 
-A Python package for retrieving and analyzing financial disclosure data from members of Congress. CapitolGains provides programmatic access to both Senate and House trading activity and financial disclosures through official government websites.
+[![PyPI version](https://badge.fury.io/py/capitolgains.svg)](https://badge.fury.io/py/capitolgains)
+[![Python Support](https://img.shields.io/pypi/pyversions/capitolgains.svg)](https://pypi.org/project/capitolgains/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+CapitolGains is a robust Python package for programmatically accessing and analyzing financial disclosure data from members of the United States Congress. It provides reliable, automated access to both House and Senate trading activity and financial disclosures through official government websites.
 
 ## Features
 
-### Core Functionality
-- [x] Comprehensive congress member database with party affiliations
-- [x] Automated retrieval of financial disclosures:
-  - [x] Individual trade reports (Periodic Transaction Reports)
-  - [x] Annual financial disclosure forms
-  - [x] Blind trust reports (Senate only)
-  - [x] Filing extensions
-- [x] Support for House website using Playwright
-- [x] Support for Senate website with robust error handling:
-  - [x] Automated agreement acceptance
-  - [x] Smart pagination handling
-  - [x] Resilient to network issues with retry logic
-- [x] Efficient caching of disclosure data to minimize network requests
-- [x] Direct download of disclosure PDFs using HTTP requests
-- [x] Case-insensitive member matching
-- [ ] Trade history display for current year (including previous year during grace period through February 15th)
+### Data Access
+- **Comprehensive Member Database**: Access details of all current Congress members with party affiliations
+- **Multiple Disclosure Types**:
+  - Periodic Transaction Reports (PTRs)
+  - Annual Financial Disclosures
+  - Blind Trust Reports
+  - Filing Extensions
+- **Smart Data Retrieval**:
+  - Efficient caching to minimize network requests
+  - Automated session management
+  - Robust error handling and retries
+  - Smart pagination for large result sets
 
-### Upcoming Features
-- [ ] Historical data tracking (years in office)
-- [ ] Net worth dashboard integrating annual disclosures and recent trades
-- [ ] Database integration for persistent storage
-- [ ] Advanced trade history visualization
-- [ ] Configurable automated data collection:
-  - [ ] Filtering by individual names
-  - [ ] Party-based selection
-  - [ ] Chamber-specific queries (Senate/House)
-  - [ ] Custom group definitions
+### Platform Support
+- **House of Representatives**:
+  - Full support for House disclosure portal
+  - Records available from 1995 onwards
+  - Automated form submission and result parsing
+- **Senate**:
+  - Complete Senate disclosure system integration
+  - Records available from 2012 onwards
+  - Automated agreement acceptance
+  - Support for both web tables and PDFs
+
+### Data Processing
+- **Flexible Search Options**:
+  - Case-insensitive member matching
+  - State and district filtering
+  - Date range queries
+  - Report type filtering
+- **Rich Data Extraction**:
+  - Structured data from web tables
+  - Automated PDF downloads
+  - Metadata parsing
+  - Trade categorization
 
 ## Installation
 
 ```bash
+# Install the package
 pip install capitolgains
+
+# Install browser automation dependencies
+playwright install
 ```
 
-## Usage
+## Quick Start
 
 ```python
-from capitolgains import Congress, Representative, Senator
-from capitolgains.utils.scraper import HouseDisclosureScraper
-from capitolgains.utils.senate_scraper import SenateDisclosureScraper
-
-# Initialize Congress tracker
-congress = Congress()
-
-# Get all current members
-members = congress.get_all_members()
+from capitolgains import Representative, Senator
+from capitolgains.utils.representative_scraper import HouseDisclosureScraper
+from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 
 # House member example
-house_scraper = HouseDisclosureScraper()
-rep = Representative("Pelosi", state="CA", district="11")
-house_disclosures = rep.get_disclosures(house_scraper, year="2023")
-
-# Get trades for a specific year using cached data
-trades_2023 = rep.get_recent_trades(house_scraper, year="2023")
+with HouseDisclosureScraper() as house_scraper:
+    pelosi = Representative("Pelosi", state="CA", district="11")
+    disclosures = pelosi.get_disclosures(house_scraper, year="2023")
 
 # Senate member example
 with SenateDisclosureScraper() as senate_scraper:
-    sen = Senator("Warren", first_name="Elizabeth", state="MA")
-    senate_disclosures = sen.get_disclosures(senate_scraper, year="2023")
+    warren = Senator("Warren", first_name="Elizabeth", state="MA")
+    disclosures = warren.get_disclosures(senate_scraper, year="2023")
+```
+
+## Advanced Usage
+
+### Custom Search Parameters
+
+```python
+from capitolgains import Representative
+from capitolgains.utils.representative_scraper import HouseDisclosureScraper, ReportType
+
+with HouseDisclosureScraper() as scraper:
+    rep = Representative("Pelosi", state="CA", district="11")
     
-    # Get recent trades for a senator known for frequent trading
-    tuberville = Senator("Tuberville", first_name="Tommy", state="AL")
-    trades = tuberville.get_recent_trades(senate_scraper, year="2023")
-
-    # Get annual financial disclosure
-    disclosure = sen.get_annual_disclosure(senate_scraper, 2023)
-    print(f"Downloaded disclosure to: {disclosure['file_path']}")
-
-## Project Structure
-```
-capitolgains/
-├── __init__.py
-├── core/
-│   ├── __init__.py
-│   ├── congress.py      # Congress member management
-│   ├── representative.py # House member functionality
-│   └── senator.py       # Senator functionality
-├── utils/
-│   ├── __init__.py
-│   ├── scraper.py      # House website automation
-│   ├── senate_scraper.py # Senate website automation
-│   └── parser.py       # Document parsing utilities
-├── database/
-│   ├── __init__.py
-│   ├── models.py       # Database models
-│   └── manager.py      # Database operations
-└── cli/
-    ├── __init__.py
-    └── main.py         # Command-line interface
+    # Search using ReportType enums for precise filtering
+    results = rep.get_disclosures(
+        scraper,
+        year="2023",
+        report_types=[
+            ReportType.PTR,           # Periodic Transaction Reports
+            ReportType.AMENDMENT,     # Amendments to filings
+            ReportType.ANNUAL,        # Annual financial disclosures
+            ReportType.BLIND_TRUST,   # Blind trust reports
+            ReportType.EXTENSION,     # Filing extensions
+            ReportType.NEW_FILER,     # New filer reports
+            ReportType.TERMINATION    # Termination reports
+        ]
+    )
+    
+    # Get only trades and amendments
+    trade_results = rep.get_disclosures(
+        scraper,
+        year="2023",
+        report_types=[ReportType.PTR, ReportType.AMENDMENT]
+    )
 ```
 
-## Development Setup
+### Efficient Bulk Processing
 
-1. Clone the repository
+```python
+# Process multiple members efficiently by reusing scraper session
+with SenateDisclosureScraper() as scraper:
+    senators = [
+        Senator("Warren", first_name="Elizabeth", state="MA"),
+        Senator("Sanders", first_name="Bernard", state="VT"),
+        Senator("Tuberville", first_name="Tommy", state="AL")
+    ]
+    
+    for senator in senators:
+        try:
+            # Get trades for a specific date range
+            disclosures = senator.get_disclosures(
+                scraper,
+                start_date="01/01/2023",
+                end_date="12/31/2023"
+            )
+            trades = disclosures['trades']
+            print(f"Found {len(trades)} trades for {senator.name}")
+        except Exception as e:
+            # If session expires, force a new one
+            scraper.with_session(force_new=True)
+```
+
+### Congress Member Database
+
+```python
+from capitolgains import Congress
+
+# Initialize Congress tracker with API key
+congress = Congress(api_key="your_api_key")  # Get key from congress.gov/api
+
+# Get all members of the current Congress (automatically uses current session)
+members = congress.get_all_members()
+
+# Process members by chamber
+house_members = [m for m in members if m.chamber == 'House']
+senate_members = [m for m in members if m.chamber == 'Senate']
+
+# Use member data directly
+with HouseDisclosureScraper() as house_scraper:
+    # Process first 3 House members
+    for member in house_members[:3]:
+        # Extract member details
+        last_name = member.name.split()[-1]
+        state = member.state
+        
+        # Create Representative instance and get disclosures
+        rep = Representative(last_name, state=state)
+        disclosures = rep.get_disclosures(house_scraper, year="2023")
+        print(f"Found {len(disclosures['trades'])} trades for {member.name}")
+
+with SenateDisclosureScraper() as senate_scraper:
+    # Process first 3 Senators
+    for member in senate_members[:3]:
+        # Extract member details
+        name_parts = member.name.split()
+        first_name = name_parts[0]
+        last_name = name_parts[-1]
+        state = member.state
+        
+        # Create Senator instance and get disclosures
+        sen = Senator(last_name, first_name=first_name, state=state)
+        disclosures = sen.get_disclosures(senate_scraper, year="2023")
+        print(f"Found {len(disclosures['trades'])} trades for {member.name}")
+```
+
+## Development
+
+### Setup
+
+1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/capitolgains.git
 cd capitolgains
 ```
 
-2. Create a virtual environment
+2. Create a virtual environment:
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
@@ -111,39 +193,45 @@ source venv/bin/activate  # Linux/Mac
 .\venv\Scripts\activate  # Windows
 ```
 
-3. Install dependencies
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
-pip install -r tests/requirements-test.txt  # For running tests
+pip install -r tests/requirements-test.txt
 ```
 
-4. Install Playwright browsers
-```bash
-playwright install
-```
+### Running Tests
 
-## Testing
-
-The project includes comprehensive test suites for both House and Senate functionality:
+The project includes comprehensive test suites:
 
 ```bash
 # Run all tests
 pytest
 
-# Run specific test modules
-pytest tests/core/test_senator.py
-pytest tests/utils/test_senate_scraper.py
+# Run specific test categories
+pytest tests/test_house/  # House-specific tests
+pytest tests/test_senate/  # Senate-specific tests
+pytest tests/test_core/   # Core functionality tests
+pytest tests/test_utils/  # Utility function tests
+
+# Run with specific markers
+pytest -m "house"        # House-related tests
+pytest -m "senate"       # Senate-related tests
+pytest -m "integration"  # Integration tests
+pytest -m "scraper"      # Scraper-specific tests
 ```
 
-Test features include:
-- Extensive integration tests with live websites
-- Edge case handling and error scenarios
-- Proper resource cleanup
-- Debug logging for troubleshooting
+### Contributing
 
-## Contributing
+Contributions are welcome! To contribute:
 
-Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request.
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Add tests for your changes
+5. Ensure all tests pass
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
 ## License
 
@@ -151,4 +239,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Disclaimer
 
-This package is for educational and research purposes only. Users are responsible for ensuring compliance with all applicable laws and regulations regarding the collection and use of congressional financial data. This project utilizes data from various sources, including the [Congress.gov API](https://github.com/LibraryOfCongress/api.congress.gov/) and other publicly available resources.
+This package is for educational and research purposes only. Users are responsible for ensuring compliance with all applicable laws and regulations regarding the collection and use of congressional financial data. This project is not affiliated with, endorsed by, or sponsored by the United States Congress or any government agency.
+
+## Acknowledgments
+
+- Data sourced from official House and Senate disclosure portals
+- Congress member data from [Congress.gov API](https://api.congress.gov/)

@@ -14,11 +14,17 @@ import logging
 from pathlib import Path
 import tempfile
 from typing import List, Optional, Dict, Any, Tuple, Union
+from appdirs import user_data_dir
 from playwright.sync_api import sync_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 from datetime import datetime
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Configure app directories
+APP_NAME = "capitolgains"
+APP_AUTHOR = "capitolgains"
+DEFAULT_DOWNLOAD_DIR = user_data_dir(APP_NAME, APP_AUTHOR)
 
 class SenateDisclosureScraper:
     """Scraper for Senate financial disclosures.
@@ -634,7 +640,7 @@ class SenateDisclosureScraper:
             report_url: URL of the report to process
             report_type: Type of report ('annual', 'ptr', 'amendment', etc). Used for routing.
             download_dir: Optional directory for saving PDFs. If None, saves to
-                        example_output/senate/[member_name]/
+                        platform-specific user data directory (e.g. ~/Library/Application Support/CapitolGains on macOS).
             
         Returns:
             Dictionary containing:
@@ -645,10 +651,9 @@ class SenateDisclosureScraper:
             }
         """
         if not download_dir:
-            # Create default directory structure in example_output
-            base_dir = Path("example_output/senate")
-            base_dir.mkdir(parents=True, exist_ok=True)
-            download_dir = str(base_dir)
+            # Use platform-specific user data directory
+            os.makedirs(DEFAULT_DOWNLOAD_DIR, exist_ok=True)
+            download_dir = DEFAULT_DOWNLOAD_DIR
             
         filing_type = self._determine_filing_type(report_url)
         logger.debug(f"Processing {filing_type} filing from {report_url}")

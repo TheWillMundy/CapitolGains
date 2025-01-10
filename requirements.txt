@@ -1,4 +1,10 @@
+# Core dependencies
 requests>=2.31.0
 python-dotenv>=1.0.0
-playwright>=1.41.0  # For web scraping later
-pytest>=7.4.0  # For testing 
+playwright>=1.41.0
+appdirs>=1.4.4
+
+# Test dependencies
+pytest>=7.4.0
+pytest-timeout>=2.1.0
+pytest-playwright>=0.4.0 
