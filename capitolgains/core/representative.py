@@ -50,7 +50,6 @@ class Representative:
             
         Note:
             - Years must be 1995 or later (when electronic records began)
-            - Current year is valid (though may return no results)
             - Only strictly future years are invalid
         """
         try:
@@ -198,14 +197,29 @@ class Representative:
         
         # Categorize disclosures by type
         categorized = {
-            'trades': [d for d in filtered_disclosures if 'PTR' in d['filing_type']],
-            'annual': [d for d in filtered_disclosures if 'FD' in d['filing_type']]
+            'trades': [d for d in filtered_disclosures if 'ptr' in d['filing_type'].lower() or 'transaction' in d['filing_type'].lower()],
+            'annual': [d for d in filtered_disclosures if 'fd' in d['filing_type'].lower() and not 'amendment' in d['filing_type'].lower()],
+            'amendments': [d for d in filtered_disclosures if 'amendment' in d['filing_type'].lower()],
+            'blind_trust': [d for d in filtered_disclosures if 'blind trust' in d['filing_type'].lower()],
+            'extension': [d for d in filtered_disclosures if 'extension' in d['filing_type'].lower()],
+            'new_filer': [d for d in filtered_disclosures if 'new filer' in d['filing_type'].lower()],
+            'termination': [d for d in filtered_disclosures if 'termination' in d['filing_type'].lower()],
+            'other': [d for d in filtered_disclosures if not any(
+                x in d['filing_type'].lower() for x in 
+                ['ptr', 'transaction', 'fd', 'amendment', 'blind trust', 'extension', 'new filer', 'termination']
+            )]
         }
         
         # Log categorization results
         logger.info(f"Categorized {len(filtered_disclosures)} disclosures:")
         logger.info(f"- Trades: {len(categorized['trades'])}")
         logger.info(f"- Annual: {len(categorized['annual'])}")
+        logger.info(f"- Amendments: {len(categorized['amendments'])}")
+        logger.info(f"- Blind Trust: {len(categorized['blind_trust'])}")
+        logger.info(f"- Extension: {len(categorized['extension'])}")
+        logger.info(f"- New Filer: {len(categorized['new_filer'])}")
+        logger.info(f"- Termination: {len(categorized['termination'])}")
+        logger.info(f"- Other: {len(categorized['other'])}")
         
         # Cache the results
         self._cached_disclosures[year] = categorized

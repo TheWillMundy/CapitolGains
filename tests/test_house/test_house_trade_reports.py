@@ -3,6 +3,7 @@ import pytest
 import pprint
 from pathlib import Path
 from capitolgains.core.representative import Representative
+from datetime import datetime
 
 @pytest.mark.house
 @pytest.mark.integration
@@ -33,7 +34,7 @@ def test_house_trade_report_basic(house_scraper, output_dir):
         assert Path(pdf_path).stat().st_size > 0
 
 @pytest.mark.house
-def test_house_input_validation():
+def test_house_input_validation(future_year):
     """Test input validation for Representative class."""
     # Test invalid state
     with pytest.raises(ValueError) as exc_info:
@@ -43,24 +44,24 @@ def test_house_input_validation():
     # Test valid state
     rep = Representative("Test", state="CA")  # Should not raise
     
-    # Test future year
+    # Test future year using static method
     with pytest.raises(ValueError) as exc_info:
-        Representative.validate_year("2025")  # Use class method directly
+        Representative.validate_year(future_year)
     assert "Year cannot be in the future" in str(exc_info.value)
     
     # Test invalid year format
     with pytest.raises(ValueError) as exc_info:
-        Representative.validate_year("invalid")  # Use class method directly
+        Representative.validate_year("invalid")
     assert "Invalid year format" in str(exc_info.value)
     
     # Test year too old
     with pytest.raises(ValueError) as exc_info:
-        Representative.validate_year("1994")  # Use class method directly
+        Representative.validate_year("1994")
     assert "Year must be 1995 or later" in str(exc_info.value)
 
 @pytest.mark.house
 @pytest.mark.integration
-def test_house_trade_report_error_handling(house_scraper):
+def test_house_trade_report_error_handling(house_scraper, future_year):
     """Test error handling for invalid trade report requests."""
     rep = Representative("Pelosi", state="CA", district="11")
     
@@ -71,7 +72,7 @@ def test_house_trade_report_error_handling(house_scraper):
     
     # Test with future year (should fail before making request)
     with pytest.raises(ValueError) as exc_info:
-        rep.get_disclosures(house_scraper, "2025")
+        rep.get_disclosures(house_scraper, future_year)
     assert "Year cannot be in the future" in str(exc_info.value)
     
     # Test with invalid state (should fail at initialization)
@@ -119,17 +120,17 @@ def test_house_trade_report_date_filtering(house_scraper):
     
     # Test different years
     years = ["2022", "2023"]
-    previous_count = None
     
     for year in years:
         disclosures = rep.get_disclosures(house_scraper, year)
-        current_count = len(disclosures['trades'])
         
-        # Ensure we get different results for different years
-        if previous_count is not None:
-            assert current_count != previous_count, f"Expected different number of trades for {year}"
-        
-        previous_count = current_count
+        # Verify that any trades found are from the correct year
+        for trade in disclosures['trades']:
+            assert year in trade['year'], f"Trade from {trade['year']} found in {year} results"
+            
+        # Verify the structure of results
+        assert isinstance(disclosures['trades'], list)
+        assert isinstance(disclosures['annual'], list)
 
 @pytest.mark.house
 @pytest.mark.integration

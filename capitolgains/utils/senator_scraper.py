@@ -280,12 +280,6 @@ class SenateDisclosureScraper:
     ) -> List[Dict[str, Any]]:
         """Search for a specific senator's financial disclosures.
         
-        This method handles the complete search process:
-        1. Ensures we have a valid session
-        2. Fills out the search form with provided criteria
-        3. Handles the DataTables loading states
-        4. Extracts results across all pagination pages
-        
         Args:
             last_name: Senator's last name
             filing_year: Year to search for (optional, will be converted to date range)
@@ -300,27 +294,43 @@ class SenateDisclosureScraper:
         Returns:
             List of dictionaries containing disclosure information
             
-        Note:
-            Date handling:
-            - If filing_year is provided, it will be converted to a date range for that year
-            - If start_date/end_date are provided, they take precedence over filing_year
-            - Dates must be in MM/DD/YYYY format
-            - Only reports from 2012 onwards are available
+        Raises:
+            ValueError: If year or dates are invalid
+            TimeoutError: If search results don't load
         """
         try:
             logger.debug(f"Starting search for {first_name} {last_name}, {state}")
+            logger.debug(f"Search parameters - Year: {filing_year}, Start: {start_date}, End: {end_date}")
+            logger.debug(f"Report types: {report_types}")
+            
+            # Validate year if provided
+            if filing_year:
+                try:
+                    year_int = int(filing_year)
+                    current_year = datetime.now().year
+                    
+                    if year_int > current_year:
+                        raise ValueError("Year cannot be in the future")
+                    if year_int < 2012:  # Senate records start from 2012
+                        raise ValueError("Year must be 2012 or later")
+                except ValueError as e:
+                    if "invalid literal for int()" in str(e):
+                        raise ValueError("Invalid year format") from e
+                    raise
             
             # Handle date parameters
             if not start_date and not end_date and filing_year:
                 # Convert year to date range (e.g., "2023" -> "01/01/2023" to "12/31/2023")
                 start_date = f"01/01/{filing_year}"
                 end_date = f"12/31/{filing_year}"
+                logger.debug(f"Converted year {filing_year} to date range: {start_date} - {end_date}")
             
             # Validate date formats if provided
             for date_str, date_name in [(start_date, "start_date"), (end_date, "end_date")]:
                 if date_str:
                     try:
                         parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
+                        logger.debug(f"Validated {date_name}: {date_str} -> {parsed_date}")
                         # Ensure date is not before 2012
                         if parsed_date.year < 2012:
                             raise ValueError(f"Senate reports are only available from 2012 onwards")
@@ -335,12 +345,15 @@ class SenateDisclosureScraper:
                 end = datetime.strptime(end_date, "%m/%d/%Y")
                 if end < start:
                     raise ValueError("End date cannot be before start date")
+                logger.debug(f"Validated date range: {start} to {end}")
             
             # Ensure we have a valid session on the search page
+            logger.debug("Ensuring valid session on search page")
             self.with_session(f"{self.BASE_URL}{self.SEARCH_PATH}")
             self._wait_for_search_form()
             
             # Fill form using efficient JavaScript evaluation
+            logger.debug("Filling search form")
             self._page.evaluate('''([lastName, firstName, startDate, endDate]) => {
                 const ln = document.getElementById('lastName');
                 const fn = document.getElementById('firstName');
@@ -397,6 +410,7 @@ class SenateDisclosureScraper:
                 logger.debug(f"Processing page {page_num}")
                 results = self._extract_page_results()
                 logger.debug(f"Found {len(results)} results on page {page_num}")
+                logger.debug(f"Page {page_num} results: {results}")
                 all_results.extend(results)
                 
                 # Check for next page
@@ -412,12 +426,15 @@ class SenateDisclosureScraper:
             
             # Filter out candidate reports if not wanted
             if not include_candidate_reports:
+                pre_filter_count = len(all_results)
                 all_results = [
                     r for r in all_results 
                     if 'candidate' not in r['report_type'].lower()
                 ]
+                logger.debug(f"Filtered out {pre_filter_count - len(all_results)} candidate reports")
                 
             logger.debug(f"Total results found: {len(all_results)}")
+            logger.debug(f"Final results: {all_results}")
             return all_results
                 
         except PlaywrightTimeout as e:
@@ -939,7 +956,7 @@ class SenateDisclosureScraper:
                 raise ValueError("Failed to extract transactions from PTR")
                 
             return {
-                'type': 'ptr',
+                'type': 'web_table',
                 'metadata': metadata,
                 'sections': {
                     'transactions': transactions

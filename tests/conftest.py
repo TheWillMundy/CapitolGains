@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from capitolgains.utils.senator_scraper import SenateDisclosureScraper
 from capitolgains.utils.representative_scraper import HouseDisclosureScraper
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -51,4 +52,9 @@ def test_representatives():
         ("Pelosi", "CA", "11"),
         ("Ocasio-Cortez", "NY", "14"),
         ("Johnson", "LA", "4")
-    ] 
+    ]
+
+@pytest.fixture
+def future_year():
+    """Fixture that provides a year in the future."""
+    return str(datetime.now().year + 1) 

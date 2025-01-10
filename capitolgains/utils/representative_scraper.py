@@ -13,11 +13,24 @@ import time
 import logging
 from pathlib import Path
 import tempfile
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+from enum import Enum
+from datetime import datetime
 from playwright.sync_api import sync_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+class ReportType(Enum):
+    """Valid report types for financial disclosures."""
+    PTR = 'ptr'
+    ANNUAL = 'annual'
+    AMENDMENT = 'amendment'
+    BLIND_TRUST = 'blind_trust'
+    EXTENSION = 'extension'
+    NEW_FILER = 'new_filer'
+    TERMINATION = 'termination'
+    OTHER = 'other'
 
 class HouseDisclosureScraper:
     """Scraper for House of Representatives financial disclosures.
@@ -173,41 +186,71 @@ class HouseDisclosureScraper:
             
         return href
             
+    def _validate_year(self, year: str) -> None:
+        """Validate the year format and value.
+        
+        Args:
+            year: Year string to validate
+            
+        Raises:
+            ValueError: If year is invalid
+        """
+        try:
+            year_int = int(year)
+            current_year = datetime.now().year
+            
+            if year_int > current_year:
+                raise ValueError("Year cannot be in the future")
+            if year_int < 1995:  # House records start from 1995
+                raise ValueError("Year must be 1995 or later")
+        except ValueError as e:
+            if "invalid literal for int()" in str(e):
+                raise ValueError("Invalid year format") from e
+            raise
+
     def search_member_disclosures(
         self,
         last_name: str,
         filing_year: str,
         state: Optional[str] = None,
-        district: Optional[str] = None
+        district: Optional[str] = None,
+        report_types: Optional[List[Union[ReportType, str]]] = None
     ) -> List[Dict[str, Any]]:
         """Search for a specific member's financial disclosures.
-        
-        This method navigates to the search page, fills out the form, and extracts
-        disclosure information from the results table.
         
         Args:
             last_name: Member's last name
             filing_year: Year to search for
             state: Optional two-letter state code
             district: Optional district number
+            report_types: Optional list of report types to filter results
+                        (use ReportType enum values)
             
         Returns:
-            List of dictionaries containing disclosure information:
-            [
-                {
-                    'name': str,
-                    'office': str (format: "STATE-DISTRICT"),
-                    'year': str,
-                    'filing_type': str,
-                    'pdf_url': Optional[str]
-                },
-                ...
-            ]
+            List of dictionaries containing disclosure information
             
         Raises:
-            TimeoutError: If the search results don't load within the timeout period
-            ValueError: If the search form cannot be submitted
+            ValueError: If year is invalid or report types are invalid
+            TimeoutError: If the search results don't load
         """
+        # Validate year before proceeding
+        self._validate_year(filing_year)
+        
+        # Convert string report types to enum if needed
+        if report_types:
+            validated_types = []
+            for rt in report_types:
+                if isinstance(rt, str):
+                    try:
+                        validated_types.append(ReportType(rt.lower()))
+                    except ValueError:
+                        raise ValueError(f"Invalid report type: {rt}")
+                elif isinstance(rt, ReportType):
+                    validated_types.append(rt)
+                else:
+                    raise ValueError(f"Invalid report type: {rt}")
+            report_types = validated_types
+
         try:
             logger.info(f"Searching for disclosures - Name: {last_name}, Year: {filing_year}")
             
@@ -288,11 +331,25 @@ class HouseDisclosureScraper:
                     else:
                         full_pdf_url = f"https://disclosures-clerk.house.gov/{pdf_url}"
                         
+                    filing_type = self._safe_get_cell_text(filing_cell).lower()
+                    
+                    # Filter by report type if specified
+                    if report_types:
+                        matches_type = False
+                        for rt in report_types:
+                            if (rt == ReportType.PTR and ('transaction' in filing_type or 'ptr' in filing_type)) or \
+                               (rt == ReportType.ANNUAL and 'annual' in filing_type) or \
+                               (rt == ReportType.AMENDMENT and 'amendment' in filing_type):
+                                matches_type = True
+                                break
+                        if not matches_type:
+                            continue
+                        
                     result = {
                         'name': self._safe_get_cell_text(name_cell),
                         'office': self._safe_get_cell_text(office_cell),
                         'year': self._safe_get_cell_text(year_cell),
-                        'filing_type': self._safe_get_cell_text(filing_cell),
+                        'filing_type': filing_type,
                         'pdf_url': full_pdf_url
                     }
                     

@@ -2,6 +2,7 @@
 import pytest
 from capitolgains.core.senator import Senator
 import logging
+import time
 
 @pytest.mark.senate
 @pytest.mark.integration
@@ -33,13 +34,29 @@ def test_senate_trade_report_basic(senate_scraper, output_dir):
             assert 'sections' in result
             
             # Validate trade data structure
-            for section in result['sections']:
-                if section['table']:
-                    assert 'headers' in section['table']
-                    assert 'rows' in section['table']
+            sections = result['sections']
+            if isinstance(sections, list):
+                # Handle annual report format (list of sections)
+                for section in sections:
+                    if section['table']:
+                        assert 'headers' in section['table']
+                        assert 'rows' in section['table']
+                        
+                        # Check for required trade information columns
+                        headers = [h.lower() for h in section['table']['headers']]
+                        assert any('asset' in h for h in headers)
+                        assert any('transaction' in h for h in headers)
+                        assert any('amount' in h for h in headers)
+            else:
+                # Handle PTR format (dictionary with transactions key)
+                assert 'transactions' in sections
+                transactions = sections['transactions']
+                if transactions['table']:
+                    assert 'headers' in transactions['table']
+                    assert 'rows' in transactions['table']
                     
                     # Check for required trade information columns
-                    headers = [h.lower() for h in section['table']['headers']]
+                    headers = [h.lower() for h in transactions['table']['headers']]
                     assert any('asset' in h for h in headers)
                     assert any('transaction' in h for h in headers)
                     assert any('amount' in h for h in headers)
@@ -78,8 +95,8 @@ def test_senate_multiple_senators_trades(senate_scraper, test_senators):
 
 @pytest.mark.senate
 @pytest.mark.integration
-def test_senate_trade_report_date_filtering(senate_scraper):
-    """Test trade report filtering by date."""
+def test_senate_trade_report_year_comparison(senate_scraper):
+    """Test trade report filtering for different years."""
     logging.getLogger('capitolgains').setLevel(logging.DEBUG)
     
     senator = Senator("Tuberville", first_name="Thomas", state="AL")
@@ -124,19 +141,50 @@ def test_senate_trade_report_date_filtering(senate_scraper):
     # Verify reports are unique between years
     assert year_2022_reports != year_2023_reports, \
         "Expected different reports for different years"
+
+@pytest.mark.senate
+@pytest.mark.integration
+def test_senate_trade_report_date_ranges(senate_scraper):
+    """Test trade report filtering within date ranges."""
+    senator = Senator("Tuberville", first_name="Thomas", state="AL")
     
-    # Verify dates fall within specified ranges
+    # Test 2022 date range
+    start_date = "01/01/2022"
+    end_date = "12/31/2022"
+    year_2022 = senator.get_disclosures(
+        senate_scraper,
+        start_date=start_date,
+        end_date=end_date
+    )
+    
+    # Verify dates fall within specified range
     for report in year_2022['trades']:
         report_date = report['date']
         assert report_date >= "01/01/2022" and report_date <= "12/31/2022", \
             f"Report date {report_date} outside 2022 range"
     
+    # Test 2023 date range
+    start_date = "01/01/2023"
+    end_date = "12/31/2023"
+    year_2023 = senator.get_disclosures(
+        senate_scraper,
+        start_date=start_date,
+        end_date=end_date
+    )
+    
+    # Verify dates fall within specified range
     for report in year_2023['trades']:
         report_date = report['date']
         assert report_date >= "01/01/2023" and report_date <= "12/31/2023", \
             f"Report date {report_date} outside 2023 range"
+
+@pytest.mark.senate
+@pytest.mark.integration
+def test_senate_trade_report_start_date_only(senate_scraper):
+    """Test trade report filtering with only start date."""
+    senator = Senator("Tuberville", first_name="Thomas", state="AL")
     
-    # Test with just start date
+    # Test with just start date (should work)
     start_only = senator.get_disclosures(
         senate_scraper,
         start_date="01/01/2022"
@@ -145,27 +193,37 @@ def test_senate_trade_report_date_filtering(senate_scraper):
     for report in start_only['trades']:
         assert report['date'] >= "01/01/2022", \
             f"Report date {report['date']} before start date"
+
+@pytest.mark.senate
+@pytest.mark.integration
+def test_senate_trade_report_end_date_only(senate_scraper):
+    """Test trade report filtering with only end date (should fail)."""
+    senator = Senator("Tuberville", first_name="Thomas", state="AL")
     
-    # Test with just end date
-    end_only = senator.get_disclosures(
-        senate_scraper,
-        end_date="12/31/2023"
-    )
-    assert isinstance(end_only['trades'], list)
-    for report in end_only['trades']:
-        assert report['date'] <= "12/31/2023", \
-            f"Report date {report['date']} after end date"
+    # Test with just end date (should raise ValueError)
+    with pytest.raises(ValueError) as exc_info:
+        senator.get_disclosures(
+            senate_scraper,
+            end_date="12/31/2023"
+        )
+    assert "end_date requires start_date" in str(exc_info.value).lower()
+
+@pytest.mark.senate
+@pytest.mark.integration
+def test_senate_trade_report_year_parameter(senate_scraper):
+    """Test trade report filtering using year parameter."""
+    senator = Senator("Tuberville", first_name="Thomas", state="AL")
     
     # Test with year parameter
     year_results = senator.get_disclosures(senate_scraper, year="2022")
     assert isinstance(year_results['trades'], list)
     for report in year_results['trades']:
         assert "2022" in report['date'], \
-            f"Report date {report['date']} not in specified year"
+            f"Report date {report['date']} not in 2022"
 
 @pytest.mark.senate
 @pytest.mark.integration
-def test_senate_trade_report_error_handling(senate_scraper):
+def test_senate_trade_report_error_handling(senate_scraper, future_year):
     """Test error handling for invalid trade report requests."""
     senator = Senator("Tuberville", first_name="Thomas", state="AL")
     
@@ -182,7 +240,12 @@ def test_senate_trade_report_error_handling(senate_scraper):
     # Test with invalid year format
     with pytest.raises(ValueError) as exc_info:
         senator.get_disclosures(senate_scraper, year="invalid_year")
-    assert "Invalid date format" in str(exc_info.value)
+    assert "Invalid year format" in str(exc_info.value)
+    
+    # Test with future year
+    with pytest.raises(ValueError) as exc_info:
+        senator.get_disclosures(senate_scraper, year=future_year)
+    assert "Year cannot be in the future" in str(exc_info.value)
     
     # Test with end date before start date
     with pytest.raises(ValueError) as exc_info:
@@ -194,7 +257,7 @@ def test_senate_trade_report_error_handling(senate_scraper):
     assert "End date cannot be before start date" in str(exc_info.value)
 
 @pytest.mark.senate
-def test_senate_input_validation():
+def test_senate_input_validation(future_year):
     """Test input validation for Senator class."""
     # Test invalid state (territory)
     with pytest.raises(ValueError) as exc_info:
