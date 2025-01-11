@@ -1,11 +1,17 @@
-"""Senate financial disclosure scraper.
+"""Senate financial disclosure scraping functionality.
 
 This module provides functionality to scrape financial disclosures from the Senate
-website. It handles searching for disclosures, downloading PDFs, and retrieving
-annual reports.
+Financial Disclosure portal. It handles:
+- Searching for disclosures by name, year, and state
+- Downloading disclosure PDFs
+- Processing web-based and PDF-based filings
+- Managing browser automation and sessions
 
-The scraper uses Playwright for browser automation, with proper resource management
-through context managers. It includes proper error handling for network operations.
+The Senate disclosure system has specific requirements and limitations:
+- Requires accepting terms before searching
+- Uses DataTables for search results
+- Provides both web-based and PDF-based filings
+- Requires proper session management
 """
 
 import os
@@ -29,12 +35,12 @@ DEFAULT_DOWNLOAD_DIR = user_data_dir(APP_NAME, APP_AUTHOR)
 class SenateDisclosureScraper:
     """Scraper for Senate financial disclosures.
     
-    This class provides methods to:
+    This class provides functionality to:
     - Search for senator disclosures by name, year, and state
     - Download individual disclosure PDFs
     - Handle pagination through search results
-    - Manage browser automation with proper error handling
     - Process both web table and PDF filings
+    - Manage browser automation with proper error handling
     
     The scraper handles the Senate's specific requirements, such as accepting
     the initial agreement and managing the DataTables-based results interface.
@@ -42,12 +48,19 @@ class SenateDisclosureScraper:
     Attributes:
         BASE_URL: Base URL for the Senate Financial Disclosure portal
         SEARCH_PATH: Path to the search page
+        REPORT_TYPE_MAP: Mapping of report types to their form values
+        _headless: Whether to run browser in headless mode
+        _playwright: Playwright instance
+        _browser: Browser instance
+        _context: Browser context
+        _page: Current page
+        _agreement_accepted: Whether terms have been accepted
+        _session_start_time: When the current session started
     """
     
     BASE_URL = "https://efdsearch.senate.gov"
     SEARCH_PATH = "/search/"
     
-    # Map of report types to their form values
     REPORT_TYPE_MAP = {
         'annual': '7',
         'ptr': '11',
@@ -75,7 +88,10 @@ class SenateDisclosureScraper:
         """Start Playwright when entering context.
         
         Returns:
-            Self for context manager usage.
+            Self for context manager usage
+            
+        Note:
+            Configures browser with appropriate viewport and user agent settings
         """
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(
@@ -90,7 +106,13 @@ class SenateDisclosureScraper:
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up Playwright resources when exiting context."""
+        """Clean up Playwright resources when exiting context.
+        
+        Args:
+            exc_type: Type of exception that occurred, if any
+            exc_val: Exception instance that occurred, if any
+            exc_tb: Traceback of exception that occurred, if any
+        """
         if self._page:
             self._page.close()
         if self._context:
@@ -116,6 +138,10 @@ class SenateDisclosureScraper:
             
         Raises:
             TimeoutError: If unable to establish session
+            
+        Note:
+            The Senate site requires accepting terms before any operations can be performed.
+            This method handles that requirement automatically.
         """
         session_age = time.time() - (self._session_start_time or 0) if self._session_start_time else None
         
@@ -139,15 +165,16 @@ class SenateDisclosureScraper:
     def _accept_agreement(self, target_url: Optional[str] = None):
         """Accept the initial agreement on the Senate disclosure site.
         
-        This is required before any operations can be performed.
-        The Senate site requires explicit acceptance of terms via a checkbox.
-        
         Args:
             target_url: Optional URL to navigate to after accepting agreement.
                        If None, defaults to the search page.
         
         Raises:
             TimeoutError: If the agreement page doesn't load or accept within timeout
+            
+        Note:
+            The Senate site requires explicit acceptance of terms via a checkbox.
+            This must be done before any operations can be performed.
         """
         try:
             # Default to search page if no target URL provided
@@ -176,12 +203,22 @@ class SenateDisclosureScraper:
     def _wait_for_search_form(self):
         """Wait for the search form to be loaded and ready.
         
-        This ensures all form elements are present and interactive before
+        This method ensures all form elements are present and interactive before
         attempting to fill them. Uses a single JavaScript evaluation for
         efficiency in checking multiple elements.
         
         Raises:
-            Exception: If required form elements are missing or not interactive
+            ValueError: If required form elements are missing or not interactive
+            TimeoutError: If the form does not load within the timeout period
+            
+        Note:
+            Required elements include:
+            - Form container (#searchForm)
+            - Filer types section (#filerTypesDiv)
+            - Report types section (#reportTypesDiv)
+            - Name fields (first/last)
+            - Senator checkbox
+            - State dropdown
         """
         try:
             # Wait for main form container
@@ -215,7 +252,18 @@ class SenateDisclosureScraper:
             raise ValueError(f"Search form not ready: {str(e)}") from e
             
     def _wait_for_results_loading(self):
-        """Wait forDataTable results to load completely."""
+        """Wait for DataTable results to load completely.
+        
+        Returns:
+            bool: True if results were found, False if no results
+            
+        Raises:
+            TimeoutError: If results do not load within timeout period
+            
+        Note:
+            This method handles both the loading spinner and checking for
+            either results or the "No results found" message.
+        """
         try:
             # Wait for processing to start
             self._page.wait_for_selector(
@@ -286,6 +334,10 @@ class SenateDisclosureScraper:
     ) -> List[Dict[str, Any]]:
         """Search for a specific senator's financial disclosures.
         
+        This method searches the Senate Financial Disclosure portal for a member's
+        filings, handling pagination and result processing. It can search by year
+        or date range and filter by report types.
+        
         Args:
             last_name: Senator's last name
             filing_year: Year to search for (optional, will be converted to date range)
@@ -293,16 +345,33 @@ class SenateDisclosureScraper:
             state: Optional two-letter state code
             report_types: Optional list of report types to search for
                         ('annual', 'ptr', 'extension', 'blind_trust', 'other')
-            include_candidate_reports: Whether to include candidate reports in results
+            include_candidate_reports: Whether to include candidate reports
             start_date: Optional start date in MM/DD/YYYY format
             end_date: Optional end date in MM/DD/YYYY format
             
         Returns:
-            List of dictionaries containing disclosure information
+            List of dictionaries containing disclosure information:
+            [
+                {
+                    'first_name': str,
+                    'last_name': str,
+                    'office': str,
+                    'report_type': str,
+                    'date': str,
+                    'report_url': str
+                },
+                ...
+            ]
             
         Raises:
             ValueError: If year or dates are invalid
             TimeoutError: If search results don't load
+            
+        Note:
+            Date handling:
+            - If filing_year is provided, it's converted to a full year date range
+            - If start_date/end_date are provided, they take precedence over filing_year
+            - Only reports from 2012 onwards are available
         """
         try:
             logger.debug(f"Starting search for {first_name} {last_name}, {state}")
@@ -451,11 +520,27 @@ class SenateDisclosureScraper:
     def _extract_page_results(self) -> List[Dict[str, Any]]:
         """Extract disclosure information from the current results page.
         
-        Processes each row in the results table to extract disclosure details.
-        Ensures URLs are properly formatted with the base URL if needed.
+        This method processes each row in the results table to extract disclosure details.
+        It ensures URLs are properly formatted with the base URL if needed.
         
         Returns:
-            List of dictionaries containing disclosure information from current page.
+            List of dictionaries containing disclosure information:
+            [
+                {
+                    'first_name': str,
+                    'last_name': str,
+                    'office': str,
+                    'report_type': str,
+                    'date': str,
+                    'report_url': str
+                },
+                ...
+            ]
+            
+        Note:
+            - Skips malformed rows (those with insufficient cells)
+            - Skips rows without report links
+            - Ensures all URLs are absolute with proper base URL
         """
         results = []
         rows = self._page.query_selector_all('#filedReports tbody tr')
@@ -483,7 +568,7 @@ class SenateDisclosureScraper:
                     'office': cells[2].inner_text().strip(),
                     'report_type': report_cell.inner_text().strip(),
                     'date': cells[4].inner_text().strip(),
-                    'report_url': report_link.get_attribute('href')  # Renamed from pdf_url
+                    'report_url': report_link.get_attribute('href')
                 }
                 
                 logger.debug(f"Extracted result from row {i + 1}: {result}")
@@ -513,6 +598,11 @@ class SenateDisclosureScraper:
             
         Raises:
             ValueError: If the download/generation fails or the PDF is invalid
+            
+        Note:
+            - If no download_dir is specified, uses a temporary directory
+            - Handles both direct PDF downloads and web-based filings that need conversion
+            - Ensures downloaded files are valid PDFs
         """
         if not download_dir:
             download_dir = tempfile.mkdtemp()
@@ -538,6 +628,13 @@ class SenateDisclosureScraper:
             
         Returns:
             'web_table' or 'pdf' indicating the filing type
+            
+        Note:
+            Web table indicators include:
+            - Specific table IDs (#grid_items, #reportDataTable)
+            - Sections with tables (common in annual reports)
+            - Specific headers indicating annual reports
+            - PTR-specific indicators
         """
         try:
             logger.info(f"Determining filing type for URL: {report_url}")
@@ -615,6 +712,12 @@ class SenateDisclosureScraper:
             
         Returns:
             Path to the generated PDF file
+            
+        Raises:
+            ValueError: If the generated PDF is empty or does not exist
+            
+        Note:
+            Uses Playwright's PDF generation with Letter format
         """
         # Generate unique filename
         timestamp = int(time.time())
@@ -631,10 +734,11 @@ class SenateDisclosureScraper:
     def process_filing(self, report_url: str, report_type: Optional[str] = None, download_dir: Optional[str] = None) -> Dict[str, Any]:
         """Process a filing, handling both web tables and PDFs.
         
-        This method:
+        This method determines the filing type and processes it accordingly:
         1. Determines if the filing is a web table or PDF
         2. Routes to appropriate handler based on report type
-        3. For PDFs: Downloads the PDF file
+        3. For PDFs: Downloads or generates the PDF file
+        4. For web tables: Extracts structured data
         
         Args:
             report_url: URL of the report to process
@@ -649,6 +753,14 @@ class SenateDisclosureScraper:
                 'data': Optional[Dict] - Structured data for web tables,
                 'file_path': Optional[str] - Path to PDF file for PDF reports
             }
+            
+        Raises:
+            ValueError: If unable to process the filing
+            
+        Note:
+            - Web tables are converted to PDFs for consistent handling
+            - Uses printer-friendly version when available
+            - Handles both direct PDF downloads and web-based filings
         """
         if not download_dir:
             # Use platform-specific user data directory
@@ -720,6 +832,12 @@ class SenateDisclosureScraper:
             
         Returns:
             Dictionary containing the parsed annual report data
+            
+        Raises:
+            ValueError: If unable to scrape the annual report
+            
+        Note:
+            Uses the sectioned disclosure report scraper internally
         """
         try:
             return self._scrape_sectioned_disclosure_report(report_url, "annual report")
@@ -734,6 +852,12 @@ class SenateDisclosureScraper:
             
         Returns:
             Dictionary containing the parsed amendment data
+            
+        Raises:
+            ValueError: If unable to scrape the amendment report
+            
+        Note:
+            Uses the sectioned disclosure report scraper internally
         """
         try:
             return self._scrape_sectioned_disclosure_report(report_url, "amendment report")
@@ -743,7 +867,7 @@ class SenateDisclosureScraper:
     def _scrape_sectioned_disclosure_report(self, report_url: str, report_type_name: str) -> Dict[str, Any]:
         """Scrape data from a disclosure report that uses a sectioned format with tables.
         
-        This handles the common format used by both annual reports and amendments,
+        This method handles the common format used by both annual reports and amendments,
         which contain multiple sections with tables, questions/answers, and attachments.
         
         Args:
@@ -751,7 +875,25 @@ class SenateDisclosureScraper:
             report_type_name: Name of report type for error messages
             
         Returns:
-            Dictionary containing the parsed report data with metadata and sections
+            Dictionary containing:
+            {
+                'type': 'web_table',
+                'metadata': {
+                    'title': str,
+                    'filer': str,
+                    'filed_date': str
+                },
+                'sections': List[Dict] - List of section data
+            }
+            
+        Raises:
+            ValueError: If unable to extract sections from the report
+            
+        Note:
+            Sections can include:
+            - Tables with financial data
+            - Questions and answers
+            - Attachments and comments
         """
         self._page.goto(report_url)
         self._page.wait_for_load_state('networkidle')
@@ -779,9 +921,6 @@ class SenateDisclosureScraper:
                 
                 // Handle attachments and comments section
                 if (title === 'Attachments & Comments') {
-                    // For future reference - log raw HTML (commented out)
-                    // console.log('Attachments section HTML:', section.outerHTML);
-                    
                     const attachmentsText = section.querySelector('.card-body em.muted, .card-body em.text-muted')?.innerText?.trim() || '';
                     const hasAttachments = !attachmentsText.includes('No attachments added');
                     

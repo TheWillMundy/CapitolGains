@@ -1,8 +1,16 @@
-"""House Representative functionality.
+"""House Representative financial disclosure functionality.
 
-This module provides the Representative class for managing House Representative data
-and their financial disclosures. It handles caching of disclosure data and provides
-methods to fetch both periodic transaction reports (PTRs) and annual financial disclosures.
+This module provides functionality to retrieve and process financial disclosures for
+House Representatives. It handles:
+- Searching and retrieving financial disclosures
+- Caching disclosure data to minimize network requests
+- Filtering and categorizing disclosures by type
+- Downloading disclosure PDFs
+
+The House disclosure system has specific requirements and limitations:
+- Electronic records are available from 1995 onwards
+- Disclosures are categorized into trades (PTRs) and annual reports (FDs)
+- All disclosures are provided as PDFs
 """
 
 from datetime import datetime
@@ -13,12 +21,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Representative:
-    """Class representing a House Representative and their financial disclosures.
+    """A House Representative and their financial disclosures.
     
     This class provides functionality to:
     - Search and retrieve financial disclosures
     - Cache disclosure data to minimize network requests
-    - Filter and categorize disclosures by type (trades vs annual reports)
+    - Filter and categorize disclosures by type
     - Download disclosure PDFs
     
     Attributes:
@@ -26,9 +34,9 @@ class Representative:
         state: Two-letter state code (optional)
         district: District number (optional)
         _cached_disclosures: Internal cache mapping years to disclosure data
+        VALID_STATES: Set of valid two-letter state/territory codes
     """
     
-    # Valid US states and territories
     VALID_STATES: ClassVar[Set[str]] = {
         'AL', 'AK', 'AS', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DC', 'DE',
         'FL', 'GA', 'GU', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY',
@@ -46,7 +54,7 @@ class Representative:
             year: Year string to validate
             
         Raises:
-            ValueError: If the year is invalid
+            ValueError: If the year is invalid or in an invalid format
             
         Note:
             - Years must be 1995 or later (when electronic records began)
@@ -74,6 +82,9 @@ class Representative:
             
         Raises:
             ValueError: If the state code is invalid
+            
+        Note:
+            Valid codes include all US states, territories, and DC
         """
         if state is not None and state not in cls.VALID_STATES:
             valid_states = ', '.join(sorted(cls.VALID_STATES))
@@ -90,7 +101,7 @@ class Representative:
         district: Optional[str] = None,
         headless: bool = True
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Convenience method for single-member queries.
+        """Get financial disclosures for a single representative.
         
         This method handles the scraper lifecycle management for simple single-member
         queries. For bulk processing, use the scraper directly with context management.
@@ -106,7 +117,13 @@ class Representative:
             Dictionary with categorized disclosures:
             {
                 'trades': List of PTR disclosures,
-                'annual': List of annual disclosures (FD)
+                'annual': List of annual disclosures (FD),
+                'amendments': List of amendments,
+                'blind_trust': List of blind trust disclosures,
+                'extension': List of extension requests,
+                'new_filer': List of new filer reports,
+                'termination': List of termination reports,
+                'other': List of other disclosures
             }
             
         Example:
@@ -159,7 +176,13 @@ class Representative:
             Dictionary with categorized disclosures:
             {
                 'trades': List of PTR disclosures,
-                'annual': List of annual disclosures (FD)
+                'annual': List of annual disclosures (FD),
+                'amendments': List of amendments,
+                'blind_trust': List of blind trust disclosures,
+                'extension': List of extension requests,
+                'new_filer': List of new filer reports,
+                'termination': List of termination reports,
+                'other': List of other disclosures
             }
             
         Note:
@@ -168,9 +191,6 @@ class Representative:
         """
         if not year:
             year = str(datetime.now().year)
-            
-        # Validate year before making any requests
-        Representative.validate_year(year)  # Use static method directly
             
         # Check cache first for efficiency
         if year in self._cached_disclosures:
@@ -190,11 +210,6 @@ class Representative:
             if self._matches_representative(d)
         ]
         
-        # Log filing types for debugging
-        logger.info("Filing types found:")
-        for d in filtered_disclosures:
-            logger.info(f"Filing type: {d['filing_type']}")
-        
         # Categorize disclosures by type
         categorized = {
             'trades': [d for d in filtered_disclosures if 'ptr' in d['filing_type'].lower() or 'transaction' in d['filing_type'].lower()],
@@ -210,17 +225,6 @@ class Representative:
             )]
         }
         
-        # Log categorization results
-        logger.info(f"Categorized {len(filtered_disclosures)} disclosures:")
-        logger.info(f"- Trades: {len(categorized['trades'])}")
-        logger.info(f"- Annual: {len(categorized['annual'])}")
-        logger.info(f"- Amendments: {len(categorized['amendments'])}")
-        logger.info(f"- Blind Trust: {len(categorized['blind_trust'])}")
-        logger.info(f"- Extension: {len(categorized['extension'])}")
-        logger.info(f"- New Filer: {len(categorized['new_filer'])}")
-        logger.info(f"- Termination: {len(categorized['termination'])}")
-        logger.info(f"- Other: {len(categorized['other'])}")
-        
         # Cache the results
         self._cached_disclosures[year] = categorized
         return categorized
@@ -233,8 +237,12 @@ class Representative:
             
         Returns:
             True if the disclosure matches this representative's details
+            
+        Note:
+            Matches are performed using:
+            1. Office field (state-district) if available
+            2. Name matching as fallback
         """
-        logger.info(f"Checking disclosure: {disclosure}")
         office = disclosure.get('office', '')
         
         # If we have state/district and office is present, use that for matching
@@ -250,21 +258,17 @@ class Representative:
                     disc_state = office[:2].strip()
                     disc_district = office[2:].strip()
                 else:
-                    logger.warning(f"Invalid office format: {office}")
                     return False
             
             # If state is specified and doesn't match, return False
             if self.state and disc_state != self.state:
-                logger.warning(f"State mismatch: {disc_state} != {self.state}")
                 return False
                 
             # If district is specified and doesn't match, return False
             if self.district and disc_district != self.district:
-                logger.warning(f"District mismatch: {disc_district} != {self.district}")
                 return False
                 
             # If we got here and had either state or district specified, it's a match
-            logger.info("Disclosure matches representative by office")
             return True
             
         # If we get here, either:
@@ -273,16 +277,10 @@ class Representative:
         # In these cases, we just verify the name matches
         name = disclosure.get('name', '').lower()
         if not name:
-            logger.warning("No name found in disclosure")
             return False
             
         # Simple case-insensitive check if the last name appears in the full name
-        if self.name.lower() not in name:
-            logger.warning(f"Name mismatch: {self.name} not found in {name}")
-            return False
-            
-        logger.info("Disclosure matches representative by name")
-        return True
+        return self.name.lower() in name
         
     def get_recent_trades(self, scraper: HouseDisclosureScraper, year: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get recent trades (PTRs) for the representative.

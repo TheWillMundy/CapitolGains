@@ -1,7 +1,7 @@
-"""
-Congress member database functionality.
+"""Congress member database functionality.
 
-This module provides functionality to retrieve congressional member data.
+This module provides functionality to retrieve congressional member data from the Congress.gov API.
+It handles authentication, pagination, and proper error handling for API requests.
 """
 
 import logging
@@ -11,10 +11,28 @@ import requests
 logger = logging.getLogger(__name__)
 
 class CongressMember:
-    """Represents a member of Congress with their associated information."""
+    """A member of Congress with their associated information.
+    
+    This class represents a single member of Congress, providing access to their
+    biographical and term information from Congress.gov.
+    
+    Attributes:
+        bioguide_id: Unique identifier for the member
+        name: Full name of the member
+        party: Political party affiliation
+        state: Two-letter state code
+        district: Congressional district number (House members only)
+        url: URL to member's Congress.gov profile
+        terms: List of congressional terms served
+        chamber: Current chamber ('House' or 'Senate')
+    """
     
     def __init__(self, data: Dict):
-        """Initialize a CongressMember from API response data."""
+        """Initialize a CongressMember from API response data.
+        
+        Args:
+            data: Dictionary containing member data from Congress.gov API
+        """
         self.bioguide_id = data.get('bioguideId')
         self.name = data.get('name')
         self.party = data.get('partyName')
@@ -32,16 +50,33 @@ class CongressMember:
                 self.chamber = 'House'
 
     def __str__(self) -> str:
-        """Return string representation of the member."""
+        """Return string representation of the member.
+        
+        Returns:
+            String in format "Name (Party-State)"
+        """
         return f"{self.name} ({self.party}-{self.state})"
 
 class Congress:
-    """Main class for retrieving congressional member data."""
+    """Client for retrieving congressional member data from Congress.gov.
+    
+    This class provides methods to:
+    - Get the current congress number
+    - Retrieve all members of a specific congress
+    - Handle API authentication and rate limiting
+    
+    Attributes:
+        BASE_URL: Base URL for the Congress.gov API
+    """
 
     BASE_URL = "https://api.congress.gov/v3"
     
     def __init__(self, api_key: str):
-        """Initialize Congress instance with API key."""
+        """Initialize Congress instance with API key.
+        
+        Args:
+            api_key: Congress.gov API key for authentication
+        """
         self.api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({
@@ -50,7 +85,18 @@ class Congress:
         })
 
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
-        """Make an API request to Congress.gov."""
+        """Make an API request to Congress.gov.
+        
+        Args:
+            endpoint: API endpoint path
+            params: Optional query parameters
+            
+        Returns:
+            Dictionary containing API response data
+            
+        Raises:
+            requests.exceptions.RequestException: If the API request fails
+        """
         url = f"{self.BASE_URL}/{endpoint}"
         params = params or {}
         params['format'] = 'json'
@@ -64,7 +110,14 @@ class Congress:
             raise
 
     def get_current_congress(self) -> int:
-        """Get the current congress number."""
+        """Get the current congress number.
+        
+        Returns:
+            Integer representing the current congress (e.g., 118 for 118th Congress)
+            
+        Note:
+            Falls back to 118 if the API request fails
+        """
         try:
             response = self._make_request('congress')
             if 'congress' in response:
@@ -74,7 +127,20 @@ class Congress:
             return 118  # Fallback to 118th Congress if request fails
 
     def get_all_members(self, congress: Optional[int] = None) -> List[CongressMember]:
-        """Get all members of Congress for a specific congress number."""
+        """Get all members of Congress for a specific congress number.
+        
+        Args:
+            congress: Congress number to get members for (defaults to current congress)
+            
+        Returns:
+            List of CongressMember objects
+            
+        Example:
+            ```python
+            congress = Congress(api_key="your_key")
+            members = congress.get_all_members(118)  # Get 118th Congress
+            ```
+        """
         if congress is None:
             congress = self.get_current_congress()
         

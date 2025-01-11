@@ -1,12 +1,16 @@
-"""Senate member functionality.
+"""Senate financial disclosure functionality.
 
-This module provides the Senator class for managing Senate member data
-and their financial disclosures. It handles caching of disclosure data and provides
-methods to fetch both periodic transaction reports (PTRs) and annual financial disclosures.
+This module provides functionality to retrieve and process financial disclosures for
+Senators. It handles:
+- Searching and retrieving financial disclosures
+- Caching disclosure data to minimize network requests
+- Filtering and categorizing disclosures by type
+- Downloading disclosure PDFs
 
-The Senate disclosure system has some key differences from the House system:
+The Senate disclosure system has specific requirements and limitations:
+- Electronic records are available from 2012 onwards
 - Requires accepting terms before searching
-- Uses a different categorization system for reports
+- Uses a different categorization system than the House
 - Includes additional report types (blind trusts, extensions)
 """
 
@@ -18,7 +22,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Senator:
-    """Class representing a Senator and their financial disclosures.
+    """A Senator and their financial disclosures.
     
     This class provides functionality to:
     - Search and retrieve financial disclosures
@@ -35,9 +39,9 @@ class Senator:
         first_name: Senator's first name (optional)
         state: Two-letter state code (optional)
         _cached_disclosures: Internal cache mapping years to disclosure data
+        VALID_STATES: Set of valid two-letter state codes (excludes territories and DC)
     """
     
-    # Valid US states for Senate (excludes territories and DC since they don't have Senate representation)
     VALID_STATES: ClassVar[Set[str]] = {
         'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
         'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
@@ -79,7 +83,7 @@ class Senator:
         include_candidate_reports: bool = False,
         test_mode: bool = False
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Convenience method for single-member queries.
+        """Get financial disclosures for a single senator.
         
         This method handles the scraper lifecycle management for simple single-member
         queries. For bulk processing of multiple senators, use the scraper's
@@ -95,7 +99,15 @@ class Senator:
             test_mode: If True, only return one match per category
             
         Returns:
-            Dictionary with categorized disclosures
+            Dictionary with categorized disclosures:
+            {
+                'trades': List of PTR disclosures,
+                'annual': List of annual disclosures (FD),
+                'amendments': List of amendments,
+                'blind_trust': List of blind trust disclosures,
+                'extension': List of extension requests,
+                'other': List of other disclosures
+            }
             
         Example:
             ```python
@@ -142,7 +154,7 @@ class Senator:
             year: Year string to validate
             
         Raises:
-            ValueError: If the year is invalid
+            ValueError: If the year is invalid or in an invalid format
             
         Note:
             - Years must be 2012 or later (when electronic records began)
@@ -186,8 +198,8 @@ class Senator:
             year: Year to search for (defaults to current year if no dates provided)
             start_date: Optional start date in MM/DD/YYYY format
             end_date: Optional end date in MM/DD/YYYY format
-            include_candidate_reports: Whether to include candidate reports (defaults to False)
-            test_mode: If True, only return one match per category (for testing)
+            include_candidate_reports: Whether to include candidate reports
+            test_mode: If True, only return one match per category
             
         Returns:
             Dictionary with categorized disclosures:
@@ -207,14 +219,12 @@ class Senator:
             - If no dates are provided, defaults to current year
             - Only reports from 2012 onwards are available
             - end_date requires start_date to be provided
+            
+        Raises:
+            ValueError: If end_date is provided without start_date
         """
         if not year and not start_date and not end_date:
             year = str(datetime.now().year)
-            logger.debug(f"No date parameters provided, defaulting to current year: {year}")
-            
-        # Validate year if provided
-        if year:
-            self.validate_year(year)
             
         # Validate that if end_date is provided, start_date must also be provided
         if end_date and not start_date:
@@ -222,15 +232,11 @@ class Senator:
             
         # Create a cache key that includes all search parameters
         cache_key = f"{year}_{start_date}_{end_date}_{include_candidate_reports}_{test_mode}"
-        logger.debug(f"Cache key generated: {cache_key}")
         
         if cache_key in self._cached_disclosures:
-            logger.debug(f"Found cached results for key: {cache_key}")
             return self._cached_disclosures[cache_key]
             
         # Fetch all disclosure types in one request
-        logger.debug(f"Making search request - Name: {self.name}, First: {self.first_name}, State: {self.state}")
-        logger.debug(f"Date params - Year: {year}, Start: {start_date}, End: {end_date}")
         all_disclosures = scraper.search_member_disclosures(
             last_name=self.name,
             filing_year=year if not (start_date or end_date) else None,
@@ -241,16 +247,12 @@ class Senator:
             start_date=start_date,
             end_date=end_date
         )
-        logger.debug(f"Raw search results returned: {len(all_disclosures)} disclosures")
         
         # Filter results to ensure they match our senator
         filtered_disclosures = [
             d for d in all_disclosures 
             if self._matches_senator(d)
         ]
-        logger.debug(f"After filtering: {len(filtered_disclosures)} disclosures match senator")
-        
-        logger.info(f"Found {len(filtered_disclosures)} total disclosures for {self.name}")
         
         # Initialize categories
         categorized = {
@@ -265,17 +267,14 @@ class Senator:
         # Categorize disclosures by type
         for disclosure in filtered_disclosures:
             report_type = disclosure['report_type'].lower()
-            logger.debug(f"Categorizing disclosure - Type: {report_type}, Date: {disclosure.get('date')}")
             
             # First check for extensions and amendments as they may contain other keywords
             if 'extension' in report_type or 'due date' in report_type:
-                logger.debug(f"Found extension: {disclosure['report_type']}")
                 if not test_mode or len(categorized['extension']) == 0:
                     categorized['extension'].append(disclosure)
                 continue
                 
             if 'amendment' in report_type:
-                logger.debug(f"Found amendment: {disclosure['report_type']}")
                 if not test_mode or len(categorized['amendments']) == 0:
                     categorized['amendments'].append(disclosure)
                 continue
@@ -283,26 +282,19 @@ class Senator:
             # Then check other categories
             if 'periodic transaction' in report_type:
                 if not test_mode or len(categorized['trades']) == 0:
-                    logger.debug(f"Found PTR: {disclosure['report_type']}")
                     categorized['trades'].append(disclosure)
             elif ('annual report for cy' in report_type or
                   'financial disclosure report' in report_type or 
                   'public financial disclosure' in report_type or
                   report_type == 'annual report'):
-                logger.debug(f"Found annual report: {disclosure['report_type']}")
                 if not test_mode or len(categorized['annual']) == 0:
                     categorized['annual'].append(disclosure)
             elif 'blind trust' in report_type:
                 if not test_mode or len(categorized['blind_trust']) == 0:
                     categorized['blind_trust'].append(disclosure)
             else:
-                logger.debug(f"Uncategorized report type: {disclosure['report_type']}")
                 if not test_mode or len(categorized['other']) == 0:
                     categorized['other'].append(disclosure)
-        
-        # Log categorization results
-        for category, items in categorized.items():
-            logger.debug(f"Category '{category}' has {len(items)} items")
         
         # Cache results with the combined key
         self._cached_disclosures[cache_key] = categorized
@@ -323,11 +315,8 @@ class Senator:
             2. State is used in the search form to filter results
             3. Office field format can vary, making state matching unreliable
         """
-        logger.debug(f"Checking disclosure: {disclosure}")
-        
         # Check last name first (most reliable)
         if disclosure['last_name'].lower() != self.name.lower():
-            logger.debug(f"Last name mismatch: {disclosure['last_name']} vs {self.name}")
             return False
             
         # Check first name if provided with leniency
@@ -336,10 +325,8 @@ class Senator:
             our_first = self.first_name.lower()
             # Accept if either name starts with the other
             if not (disclosure_first.startswith(our_first) or our_first.startswith(disclosure_first)):
-                logger.debug(f"First name mismatch: {disclosure_first} vs {our_first}")
                 return False
         
-        logger.debug("Disclosure matches senator")
         return True
         
     def get_recent_trades(self, scraper: SenateDisclosureScraper, year: Optional[str] = None, test_mode: bool = False) -> List[Dict[str, Any]]:

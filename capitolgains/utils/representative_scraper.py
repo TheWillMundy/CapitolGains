@@ -1,11 +1,17 @@
-"""House financial disclosure scraper.
+"""House financial disclosure scraping functionality.
 
-This module provides functionality to scrape financial disclosures from the House of
-Representatives website. It handles searching for disclosures, downloading PDFs, and
-retrieving annual reports.
+This module provides functionality to scrape financial disclosures from the House
+Financial Disclosure portal. It handles:
+- Searching for disclosures by name, year, state, and district
+- Downloading disclosure PDFs
+- Processing annual report archives
+- Managing browser automation and sessions
 
-The scraper uses Playwright for browser automation, with proper resource management
-through context managers. It includes proper error handling for network operations.
+The House disclosure system has specific requirements and limitations:
+- All disclosures are provided as PDFs
+- Uses a different search interface than the Senate
+- Provides bulk downloads of annual reports
+- Records available from 1995 onwards
 """
 
 import os
@@ -28,7 +34,18 @@ APP_AUTHOR = "capitolgains"
 DEFAULT_DOWNLOAD_DIR = user_data_dir(APP_NAME, APP_AUTHOR)
 
 class ReportType(Enum):
-    """Valid report types for financial disclosures."""
+    """Valid report types for financial disclosures.
+    
+    Attributes:
+        PTR: Periodic Transaction Report
+        ANNUAL: Annual Financial Disclosure
+        AMENDMENT: Amendment to a previous filing
+        BLIND_TRUST: Blind Trust Agreement
+        EXTENSION: Filing deadline extension request
+        NEW_FILER: Initial filing for new members
+        TERMINATION: Final filing upon leaving office
+        OTHER: Other types of filings
+    """
     PTR = 'ptr'
     ANNUAL = 'annual'
     AMENDMENT = 'amendment'
@@ -41,11 +58,12 @@ class ReportType(Enum):
 class HouseDisclosureScraper:
     """Scraper for House of Representatives financial disclosures.
     
-    This class provides methods to:
+    This class provides functionality to:
     - Search for member disclosures by name, year, state, and district
     - Download individual disclosure PDFs
     - Download annual disclosure report archives
     - Retrieve available years for financial disclosures
+    - Manage browser automation with proper error handling
     
     The scraper uses Playwright for reliable browser automation and includes
     proper error handling for network operations.
@@ -53,6 +71,12 @@ class HouseDisclosureScraper:
     Attributes:
         BASE_URL: Base URL for the House Financial Disclosure portal
         SEARCH_PATH: Path to the search page
+        _headless: Whether to run browser in headless mode
+        _playwright: Playwright instance
+        _browser: Browser instance
+        _context: Browser context
+        _page: Current page
+        _session_start_time: When the current session started
     """
     
     BASE_URL = "https://disclosures-clerk.house.gov/FinancialDisclosure"
@@ -76,7 +100,10 @@ class HouseDisclosureScraper:
         """Start Playwright when entering context.
         
         Returns:
-            Self for context manager usage.
+            Self for context manager usage
+            
+        Note:
+            Configures browser with appropriate viewport and user agent settings
         """
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=self._headless)
@@ -88,7 +115,13 @@ class HouseDisclosureScraper:
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up Playwright resources when exiting context."""
+        """Clean up Playwright resources when exiting context.
+        
+        Args:
+            exc_type: Type of exception that occurred, if any
+            exc_val: Exception instance that occurred, if any
+            exc_tb: Traceback of exception that occurred, if any
+        """
         if self._page:
             self._page.close()
         if self._context:
@@ -103,7 +136,7 @@ class HouseDisclosureScraper:
         
         This method ensures we have an active session with the House disclosure site.
         Unlike the Senate site, no agreement acceptance is needed, but this provides
-        consistent session management across both scrapers.
+        consistent session management.
         
         Args:
             target_url: Optional URL to navigate to (defaults to search page)
@@ -114,6 +147,11 @@ class HouseDisclosureScraper:
             
         Raises:
             TimeoutError: If unable to establish session
+            ValueError: If unable to navigate to target URL
+            
+        Note:
+            - Handles navigation to the search tab if needed
+            - Waits for search form to be visible before proceeding
         """
         try:
             current_url = self._page.url if self._page else None
@@ -199,7 +237,11 @@ class HouseDisclosureScraper:
             year: Year string to validate
             
         Raises:
-            ValueError: If year is invalid
+            ValueError: If year is invalid or in an invalid format
+            
+        Note:
+            - Years must be 1995 or later (when electronic records began)
+            - Only strictly future years are invalid
         """
         try:
             year_int = int(year)
@@ -224,6 +266,10 @@ class HouseDisclosureScraper:
     ) -> List[Dict[str, Any]]:
         """Search for a specific member's financial disclosures.
         
+        This method searches the House Financial Disclosure portal for a member's
+        filings, handling pagination and result processing. It can filter by
+        report types and validate inputs.
+        
         Args:
             last_name: Member's last name
             filing_year: Year to search for
@@ -233,11 +279,26 @@ class HouseDisclosureScraper:
                         (use ReportType enum values)
             
         Returns:
-            List of dictionaries containing disclosure information
+            List of dictionaries containing disclosure information:
+            [
+                {
+                    'name': str,
+                    'office': str,
+                    'year': str,
+                    'filing_type': str,
+                    'pdf_url': str
+                },
+                ...
+            ]
             
         Raises:
             ValueError: If year is invalid or report types are invalid
-            TimeoutError: If the search results don't load
+            TimeoutError: If search results don't load
+            
+        Note:
+            - Report types can be provided as strings or ReportType enum values
+            - URLs in results are converted to absolute URLs
+            - Only reports from 1995 onwards are available
         """
         # Validate year before proceeding
         self._validate_year(filing_year)
@@ -393,6 +454,11 @@ class HouseDisclosureScraper:
             
         Raises:
             ValueError: If the download fails or the PDF is invalid
+            
+        Note:
+            - If no download_dir is specified, uses platform-specific user data directory
+            - Ensures downloaded files are valid PDFs
+            - Converts relative URLs to absolute URLs
         """
         if not download_dir:
             # Use platform-specific user data directory
@@ -476,6 +542,10 @@ class HouseDisclosureScraper:
             
         Raises:
             ValueError: If unable to retrieve available years
+            TimeoutError: If the downloads section doesn't load
+            
+        Note:
+            Only includes years that have downloadable annual reports
         """
         try:
             self._page.goto(self.BASE_URL)
@@ -495,7 +565,7 @@ class HouseDisclosureScraper:
             raise ValueError(f"Failed to get available years: {str(e)}") from e
             
     def download_annual_report(self, year: str, download_dir: Optional[str] = None) -> str:
-        """Download the annual financial disclosure report for a given year.
+        """Download the annual financial disclosure report archive for a given year.
         
         Args:
             year: The year to download (e.g., "2024")
@@ -506,6 +576,12 @@ class HouseDisclosureScraper:
             
         Raises:
             ValueError: If the download fails or the file is invalid
+            TimeoutError: If the downloads section doesn't load
+            
+        Note:
+            - If no download_dir is specified, uses a temporary directory
+            - Downloads are provided as ZIP files containing all reports for the year
+            - Verifies the downloaded file exists and is not empty
         """
         if not download_dir:
             download_dir = tempfile.mkdtemp()
